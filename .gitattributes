@@ -1,0 +1,38 @@
+# How line endings are handled in this repository.
+#
+# Without this file, the behaviour depends on each developer's local
+# core.autocrlf setting, so the same file can look "entirely changed" to one
+# person and unchanged to another. These rules live in the repository, so they
+# apply identically on every machine and every clone.
+
+# Treat everything as text unless it looks binary, and check it out with LF
+# endings. LF is what .NET, Node and every CI runner expect, and it keeps the
+# working tree byte-identical to what is stored.
+* text=auto eol=lf
+
+# ---- Windows batch files genuinely require CRLF ----
+# cmd.exe can misparse a .bat file that uses LF, so these are the exception.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# ---- Better diff headers ----
+# Shows the enclosing method name in diff hunk headers instead of a bare line
+# number, which makes reviewing a large C# change considerably easier.
+*.cs text diff=csharp
+
+# ---- Binary: never convert, never try to diff as text ----
+# Line-ending conversion would corrupt these outright.
+*.pdf binary
+*.db  binary
+*.db-shm binary
+*.db-wal binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pfx binary
+*.snk binary
+*.dll binary
+*.exe binary
