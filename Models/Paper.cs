@@ -24,6 +24,6 @@ public class Paper
     /// <summary>Left at default so SQLite fills it in with CURRENT_TIMESTAMP on insert.</summary>
     public DateTime UploadedAt { get; set; }
 
-    /// <summary>"Pending", "Approved" or "Rejected". Defaults to "Pending" in the database.</summary>
-    public string Status { get; set; } = "Pending";
+    /// <summary>Moderation state. Stored as text and defaulted to Pending in the database.</summary>
+    public PaperStatus Status { get; set; } = PaperStatus.Pending;
 }

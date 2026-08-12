@@ -79,10 +79,14 @@ public class ExamArchiveDbContext : DbContext
                 .IsRequired()
                 .HasMaxLength(20);
 
+            // Stored as the enum's name, not its number: it keeps the existing
+            // text column and CK_Paper_Status constraint working, and leaves the
+            // table readable by eye in a SQLite browser.
             entity.Property(p => p.Status)
                 .IsRequired()
+                .HasConversion<string>()
                 .HasMaxLength(20)
-                .HasDefaultValue("Pending");
+                .HasDefaultValue(PaperStatus.Pending);
 
             // Filled in by SQLite on insert; stored as UTC.
             entity.Property(p => p.UploadedAt)

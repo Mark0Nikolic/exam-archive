@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using ExamArchive.Data;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -25,7 +26,12 @@ if (!string.IsNullOrEmpty(connection.DataSource)
 builder.Services.AddDbContext<ExamArchiveDbContext>(options =>
     options.UseSqlite(connection.ConnectionString));
 
-builder.Services.AddControllers();
+// Enums serialize as their name, not their number. Without this, PaperStatus
+// would reach clients as 0/1/2 — unreadable, and it would silently change the
+// shape of responses that have always carried "Pending".
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi

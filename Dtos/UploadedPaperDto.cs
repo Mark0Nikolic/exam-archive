@@ -1,3 +1,5 @@
+using ExamArchive.Models;
+
 namespace ExamArchive.Dtos;
 
 /// <summary>
@@ -13,4 +15,4 @@ public record UploadedPaperDto(
     int Year,
     string FilePath,
     DateTime UploadedAt,
-    string Status);
+    PaperStatus Status);

@@ -14,15 +14,6 @@ namespace ExamArchive.Controllers;
 [Produces("application/json")]
 public class PapersController : ControllerBase
 {
-    /// <summary>
-    /// The only status this controller will ever serve. Not a parameter: pending
-    /// and rejected uploads must not be reachable from the public browse API.
-    /// </summary>
-    private const string ApprovedStatus = "Approved";
-
-    /// <summary>Every upload lands here. Promotion to Approved is a later, separate step.</summary>
-    private const string PendingStatus = "Pending";
-
     /// <summary>Matches the CK_Paper_ExamType check constraint. Submitted values are folded to these.</summary>
     private static readonly string[] AllowedExamTypes = ["Midterm", "Final", "Resit"];
 
@@ -81,7 +72,7 @@ public class PapersController : ControllerBase
         // IX_Papers_SubjectId_Year_Month index exactly.
         var papers = await _db.Papers
             .AsNoTracking()
-            .Where(p => p.SubjectId == subjectId && p.Status == ApprovedStatus)
+            .Where(p => p.SubjectId == subjectId && p.Status == PaperStatus.Approved)
             .OrderByDescending(p => p.Year)
             .ThenByDescending(p => p.Month)
             .Select(p => new PaperDto(
@@ -108,7 +99,7 @@ public class PapersController : ControllerBase
     {
         var paper = await _db.Papers
             .AsNoTracking()
-            .Where(p => p.Id == id && p.Status == ApprovedStatus)
+            .Where(p => p.Id == id && p.Status == PaperStatus.Approved)
             .Select(p => new
             {
                 p.FilePath,
@@ -251,7 +242,7 @@ public class PapersController : ControllerBase
             ExamType = examType!,
             Month = request.Month,
             Year = request.Year,
-            Status = PendingStatus
+            Status = PaperStatus.Pending
         };
 
         try
