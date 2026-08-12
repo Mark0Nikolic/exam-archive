@@ -1,0 +1,33 @@
+# Editor settings, respected by Visual Studio, VS Code and Rider.
+#
+# .gitattributes tells Git how to store files; this tells editors how to write
+# them in the first place. Keeping the two in agreement is what stops line
+# endings drifting back out of sync when a new file is created.
+
+# Stop looking for .editorconfig files above this directory.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+[*.cs]
+indent_size = 4
+
+# Web and config files conventionally use two spaces.
+[*.{json,js,ts,vue,css,scss,html,yml,yaml}]
+indent_size = 2
+
+[*.{csproj,slnx}]
+indent_size = 2
+
+# Matches the .gitattributes exception: cmd.exe can misparse LF batch files.
+[*.{bat,cmd,ps1}]
+end_of_line = crlf
+
+# Two trailing spaces are a deliberate line break in Markdown, so leave them be.
+[*.md]
+trim_trailing_whitespace = false
