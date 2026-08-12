@@ -1,0 +1,35 @@
+@ExamArchive_HostAddress = http://localhost:5199
+
+### Majors in Bachelor's
+GET {{ExamArchive_HostAddress}}/api/majors?studiesId=1
+Accept: application/json
+
+### Majors in Master's
+GET {{ExamArchive_HostAddress}}/api/majors?studiesId=2
+Accept: application/json
+
+### Every major
+GET {{ExamArchive_HostAddress}}/api/majors
+Accept: application/json
+
+### Subjects in Computer Science (id 1) — note YearOfStudy
+GET {{ExamArchive_HostAddress}}/api/subjects?majorId=1
+Accept: application/json
+
+### Subjects in Software Engineering (id 2) — Databases lands a year later here
+GET {{ExamArchive_HostAddress}}/api/subjects?majorId=2
+Accept: application/json
+
+### Approved papers for Databases (id 5) — the Pending 2025 resit is filtered out
+GET {{ExamArchive_HostAddress}}/api/papers?subjectId=5
+Accept: application/json
+
+### Approved papers for Data Structures (id 4) — the Rejected 2024 final is filtered out
+GET {{ExamArchive_HostAddress}}/api/papers?subjectId=4
+Accept: application/json
+
+### Linear Algebra (id 2) — taught in two majors, but the archive is empty
+GET {{ExamArchive_HostAddress}}/api/papers?subjectId=2
+Accept: application/json
+
+###
