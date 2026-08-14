@@ -58,7 +58,8 @@ public sealed class PaperFileServer
             {
                 f.StoredPath,
                 f.ContentType,
-                SubjectName = f.Paper!.Subject!.Name,
+                SubjectCode = f.Paper!.Subject!.Code,
+                SubjectName = f.Paper.Subject.NameSr,
                 f.Paper.ExamType,
                 f.Paper.Month,
                 f.Paper.Year,
@@ -98,7 +99,7 @@ public sealed class PaperFileServer
         PaperFileStorage.SetFileHeaders(
             response,
             PaperFileStorage.BuildDownloadName(
-                page.SubjectName, page.ExamType, page.Month, page.Year,
+                page.SubjectCode, page.SubjectName, page.ExamType, page.Month, page.Year,
                 pageNumber, page.PageCount, extension),
             asAttachment);
 

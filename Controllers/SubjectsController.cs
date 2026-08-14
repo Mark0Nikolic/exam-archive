@@ -34,13 +34,20 @@ public class SubjectsController : ControllerBase
     {
         // Query starts at the junction rather than at Subject, because the row
         // being filtered on is what carries YearOfStudy.
+        // Ordered by year only. Sorting by name belongs to the client: SQLite
+        // compares text byte by byte, so Serbian diacritics sort after Z, and the
+        // right order depends on the language and script the reader chose.
         var subjects = await _db.MajorSubjects
             .AsNoTracking()
             .Where(ms => ms.MajorId == majorId)
             .OrderBy(ms => ms.YearOfStudy)
-            .ThenBy(ms => ms.Subject!.Name)
+            .ThenBy(ms => ms.SubjectId)
             .Select(ms => new SubjectDto(
-                ms.SubjectId, ms.Subject!.Code, ms.Subject.Name, ms.YearOfStudy))
+                ms.SubjectId,
+                ms.Subject!.Code,
+                ms.Subject.NameSr,
+                ms.Subject.NameEn,
+                ms.YearOfStudy))
             .ToListAsync(cancellationToken);
 
         return Ok(subjects);

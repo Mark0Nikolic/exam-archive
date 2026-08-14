@@ -15,12 +15,20 @@ public class Subject
     /// Nullable because the archive can be populated before every code is known,
     /// and inventing one would put fiction in the database. Names alone are not
     /// dependable identifiers — two majors can each teach a different course
-    /// called "Programming Fundamentals" — so the code is what disambiguates them
-    /// and what students actually search by.
+    /// called "Основе програмирања" — so the code is what disambiguates them and
+    /// what students actually search by.
+    /// <para>
+    /// It is also the only name-like field that is the same in every language,
+    /// which is why stored file paths are built from it.
+    /// </para>
     /// </remarks>
     public string? Code { get; set; }
 
-    public string Name { get; set; } = string.Empty;
+    /// <summary>The name in Serbian Cyrillic. Required — see <see cref="Studies.NameSr"/>.</summary>
+    public string NameSr { get; set; } = string.Empty;
+
+    /// <summary>The English name, or null if not supplied.</summary>
+    public string? NameEn { get; set; }
 
     // Majors are reached through the join entity, which carries YearOfStudy.
     public ICollection<MajorSubject> MajorSubjects { get; set; } = new List<MajorSubject>();
