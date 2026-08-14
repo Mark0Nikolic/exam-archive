@@ -43,6 +43,7 @@ public sealed class PaperFileStorage
     /// together when the folder is read by eye.
     /// </param>
     public static string BuildRelativePath(
+        string? subjectCode,
         string subjectName,
         ExamType examType,
         int month,
@@ -53,10 +54,25 @@ public sealed class PaperFileStorage
     {
         var name = string.Create(
             CultureInfo.InvariantCulture,
-            $"{Slugify(subjectName)}-{examType.ToString().ToLowerInvariant()}-{year}-{month:D2}-{submissionId}-{pageNumber:D3}{extension}");
+            $"{SubjectSlug(subjectCode, subjectName)}-{examType.ToString().ToLowerInvariant()}-{year}-{month:D2}-{submissionId}-{pageNumber:D3}{extension}");
 
         return $"/uploads/{year}/{name}";
     }
+
+    /// <summary>
+    /// The subject part of a file name: the course code where there is one, the
+    /// slugified name otherwise.
+    /// </summary>
+    /// <remarks>
+    /// The code is preferred because it is the only name-like field that does not
+    /// change with the reader's language, and because it is plain ASCII. Both
+    /// matter for a path on disk: a Cyrillic filename is legal on NTFS and ext4
+    /// but awkward the moment a backup script, an rsync, or a shell on a
+    /// differently-configured machine touches it. The code also does not move when
+    /// somebody fixes a typo in a subject name, so stored paths stay honest.
+    /// </remarks>
+    private static string SubjectSlug(string? subjectCode, string subjectName) =>
+        string.IsNullOrWhiteSpace(subjectCode) ? Slugify(subjectName) : Slugify(subjectCode);
 
     /// <summary>A short token identifying one submission, shared across its pages.</summary>
     public static string NewSubmissionId() => Guid.NewGuid().ToString("N")[..8];
@@ -164,7 +180,14 @@ public sealed class PaperFileStorage
     /// than reusing the stored name, which carries a uniqueness suffix that means
     /// nothing to whoever is saving the file.
     /// </summary>
+    /// <remarks>
+    /// Uses the course code for the same reason the stored path does: with three
+    /// display languages there is no single "the name", and picking one would hand
+    /// an English-reading student a Cyrillic file name or the reverse. IT240 reads
+    /// the same to everyone, and it is what students call the course anyway.
+    /// </remarks>
     public static string BuildDownloadName(
+        string? subjectCode,
         string subjectName,
         ExamType examType,
         int month,
@@ -175,7 +198,7 @@ public sealed class PaperFileStorage
     {
         var stem = string.Create(
             CultureInfo.InvariantCulture,
-            $"{Slugify(subjectName)}-{examType.ToString().ToLowerInvariant()}-{year}-{month:D2}");
+            $"{SubjectSlug(subjectCode, subjectName)}-{examType.ToString().ToLowerInvariant()}-{year}-{month:D2}");
 
         // Single-page papers keep the clean name they had before multi-page
         // uploads existed; only genuine multi-page papers carry a page suffix.
@@ -211,16 +234,62 @@ public sealed class PaperFileStorage
         response.Headers.ContentDisposition = disposition.ToString();
     }
 
-    /// <summary>Lowercases to ASCII letters, digits and single dashes — safe on any filesystem.</summary>
+    /// <summary>
+    /// Cyrillic letters mapped to their Latin equivalents, so a Serbian name
+    /// survives slugification instead of being deleted character by character.
+    /// </summary>
+    /// <remarks>
+    /// This is the direction that works: њ is always "nj", whereas reading "nj"
+    /// back gives one letter in "коњ" and two in "инјекција". Three letters expand
+    /// to two characters, which is why this is a string map and not a char one.
+    /// </remarks>
+    private static readonly Dictionary<char, string> CyrillicToLatin = new()
+    {
+        ['а'] = "a", ['б'] = "b", ['в'] = "v", ['г'] = "g", ['д'] = "d",
+        ['ђ'] = "dj", ['е'] = "e", ['ж'] = "z", ['з'] = "z", ['и'] = "i",
+        ['ј'] = "j", ['к'] = "k", ['л'] = "l", ['љ'] = "lj", ['м'] = "m",
+        ['н'] = "n", ['њ'] = "nj", ['о'] = "o", ['п'] = "p", ['р'] = "r",
+        ['с'] = "s", ['т'] = "t", ['ћ'] = "c", ['у'] = "u", ['ф'] = "f",
+        ['х'] = "h", ['ц'] = "c", ['ч'] = "c", ['џ'] = "dz", ['ш'] = "s"
+    };
+
+    /// <summary>
+    /// Latin letters carrying Serbian diacritics, folded to plain ASCII.
+    /// </summary>
+    private static readonly Dictionary<char, string> LatinDiacritics = new()
+    {
+        ['č'] = "c", ['ć'] = "c", ['đ'] = "dj", ['š'] = "s", ['ž'] = "z"
+    };
+
+    /// <summary>
+    /// Reduces a name to lowercase ASCII letters, digits and single dashes — safe
+    /// on any filesystem, in any locale, through any backup tool.
+    /// </summary>
+    /// <remarks>
+    /// Serbian text is transliterated rather than stripped. Deleting non-ASCII
+    /// characters outright turned «Базе података» into an empty string and every
+    /// upload for that subject into a file called "subject", and "Zaštita" into
+    /// "za-tita".
+    /// </remarks>
     private static string Slugify(string value)
     {
         var slug = new StringBuilder(value.Length);
 
         foreach (var c in value)
         {
-            if (char.IsAsciiLetterOrDigit(c))
+            var lower = char.ToLowerInvariant(c);
+
+            if (char.IsAsciiLetterOrDigit(lower))
             {
-                slug.Append(char.ToLowerInvariant(c));
+                slug.Append(lower);
+            }
+            else if (CyrillicToLatin.TryGetValue(lower, out var cyrillic))
+            {
+                slug.Append(cyrillic);
+            }
+            else if (LatinDiacritics.TryGetValue(lower, out var diacritic))
+            {
+                slug.Append(diacritic);
             }
             else if (slug.Length > 0 && slug[^1] != '-')
             {

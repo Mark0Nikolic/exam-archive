@@ -16,6 +16,7 @@ public class ExamArchiveDbContext : DbContext
     public DbSet<MajorSubject> MajorSubjects => Set<MajorSubject>();
     public DbSet<Paper> Papers => Set<Paper>();
     public DbSet<PaperFile> PaperFiles => Set<PaperFile>();
+    public DbSet<User> Users => Set<User>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -23,19 +24,25 @@ public class ExamArchiveDbContext : DbContext
 
         modelBuilder.Entity<Studies>(entity =>
         {
-            entity.Property(s => s.Name)
+            entity.Property(s => s.NameSr)
                 .IsRequired()
                 .HasMaxLength(100);
 
+            entity.Property(s => s.NameEn)
+                .HasMaxLength(100);
+
             entity.HasData(
-                new Studies { Id = 1, Name = "Bachelor's" },
-                new Studies { Id = 2, Name = "Master's" });
+                new Studies { Id = 1, NameSr = "Основне академске студије", NameEn = "Bachelor's" },
+                new Studies { Id = 2, NameSr = "Мастер академске студије", NameEn = "Master's" });
         });
 
         modelBuilder.Entity<Major>(entity =>
         {
-            entity.Property(m => m.Name)
+            entity.Property(m => m.NameSr)
                 .IsRequired()
+                .HasMaxLength(200);
+
+            entity.Property(m => m.NameEn)
                 .HasMaxLength(200);
 
             // Restrict: a Studies level cannot be deleted while majors still reference it.
@@ -47,8 +54,11 @@ public class ExamArchiveDbContext : DbContext
 
         modelBuilder.Entity<Subject>(entity =>
         {
-            entity.Property(s => s.Name)
+            entity.Property(s => s.NameSr)
                 .IsRequired()
+                .HasMaxLength(200);
+
+            entity.Property(s => s.NameEn)
                 .HasMaxLength(200);
 
             entity.Property(s => s.Code)
@@ -132,14 +142,37 @@ public class ExamArchiveDbContext : DbContext
             entity.Property(p => p.RejectionReason)
                 .HasMaxLength(500);
 
+            // Hex SHA-256, so always exactly 64 characters when present.
+            entity.Property(p => p.ClaimTokenHash)
+                .HasMaxLength(64);
+
+            // Unique, and the index is what makes the lookup a single seek rather
+            // than a scan of every paper on each status check. NULLs are distinct
+            // from one another in SQLite, so the many papers without a code — staff
+            // uploads and everything predating this column — are exempt.
+            entity.HasIndex(p => p.ClaimTokenHash)
+                .IsUnique();
+
             // Restrict: a subject cannot be deleted while it still has papers.
             entity.HasOne(p => p.Subject)
                 .WithMany(s => s.Papers)
                 .HasForeignKey(p => p.SubjectId)
                 .OnDelete(DeleteBehavior.Restrict);
 
+            // SetNull, not Cascade: removing an account must not remove the papers
+            // it contributed. They stay in the archive, anonymous — which is the
+            // state most rows are in anyway.
+            entity.HasOne(p => p.SubmittedBy)
+                .WithMany(u => u.Papers)
+                .HasForeignKey(p => p.SubmittedByUserId)
+                .OnDelete(DeleteBehavior.SetNull);
+
             // Common lookup: papers for a subject, newest first.
             entity.HasIndex(p => new { p.SubjectId, p.Year, p.Month });
+
+            // Backs "my submissions". Anonymous rows are the majority and all carry
+            // NULL here, so the index stays small relative to the table.
+            entity.HasIndex(p => p.SubmittedByUserId);
 
             entity.ToTable(t =>
             {
@@ -220,6 +253,52 @@ public class ExamArchiveDbContext : DbContext
                 t.HasCheckConstraint(
                     "CK_PaperFile_SizeBytes",
                     "[SizeBytes] >= 0");
+            });
+        });
+
+        modelBuilder.Entity<User>(entity =>
+        {
+            // NOCASE makes both the comparison and the unique index below
+            // case-insensitive, so "Marko" and "marko" cannot coexist as separate
+            // accounts and either spelling finds the same row at login. The
+            // alternative — a second NormalizedUsername column kept in sync by the
+            // application — is one more thing to forget to update.
+            entity.Property(u => u.Username)
+                .IsRequired()
+                .HasMaxLength(50)
+                .UseCollation("NOCASE");
+
+            entity.HasIndex(u => u.Username)
+                .IsUnique();
+
+            // Long enough for the current PBKDF2 format with room for a future one.
+            entity.Property(u => u.PasswordHash)
+                .IsRequired()
+                .HasMaxLength(256);
+
+            entity.Property(u => u.Role)
+                .IsRequired()
+                .HasConversion<string>()
+                .HasMaxLength(20);
+
+            entity.Property(u => u.IsActive)
+                .HasDefaultValue(true);
+
+            entity.Property(u => u.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasConversion(
+                    value => value,
+                    value => DateTime.SpecifyKind(value, DateTimeKind.Utc));
+
+            entity.ToTable(t =>
+            {
+                // The authorization policies name these strings. A typo that put
+                // 'Moderater' in the column would produce an account that passes
+                // login and silently fails every [Authorize(Roles = ...)] check,
+                // which is a confusing way to find a spelling mistake.
+                t.HasCheckConstraint(
+                    "CK_User_Role",
+                    "[Role] IN ('Moderator', 'Admin')");
             });
         });
     }

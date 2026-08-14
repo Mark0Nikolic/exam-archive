@@ -2,6 +2,7 @@ using ExamArchive.Data;
 using ExamArchive.Dtos;
 using ExamArchive.Models;
 using ExamArchive.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -12,18 +13,21 @@ namespace ExamArchive.Controllers;
 /// </summary>
 /// <remarks>
 /// Split from <see cref="PapersController"/> along the line of who may call it:
-/// that controller is public, anonymous and read-only, this one is for staff and
-/// will hold the write operations. Keeping them apart means securing moderation
-/// is a single attribute on this class rather than an attribute on every action,
-/// where one omission would leave a hole.
+/// that controller is public and largely anonymous, this one is staff-only. Keeping
+/// them apart is what makes the [Authorize] below a single attribute on the class
+/// rather than one per action, where a single omission on a newly added endpoint
+/// would leave a hole that nothing would report.
 /// <para>
-/// SECURITY: there is no authentication yet, so every endpoint here is currently
-/// open to anyone who knows the URL. See the note on <see cref="GetPapers"/>.
+/// The role list is the whole authorization model today. Admin is named separately
+/// from Moderator not because they differ here — they do not — but because the
+/// operations that will separate them, editing the subject catalogue and managing
+/// accounts, are the next things to be built.
 /// </para>
 /// </remarks>
 [ApiController]
 [Route("api/moderation")]
 [Produces("application/json")]
+[Authorize(Roles = $"{nameof(UserRole.Moderator)},{nameof(UserRole.Admin)}")]
 public class ModerationController : ControllerBase
 {
     private readonly ExamArchiveDbContext _db;
@@ -48,14 +52,15 @@ public class ModerationController : ControllerBase
     /// work list. Passing Approved or Rejected reviews past decisions.
     /// </param>
     /// <remarks>
-    /// SECURITY: unauthenticated, so this currently exposes unapproved and
-    /// rejected submissions to any caller. That is the one thing the browse API
-    /// deliberately prevents, so authentication must land before this is reachable
-    /// from anywhere but a development machine.
+    /// Returns unapproved and rejected submissions, which is the one thing the
+    /// browse API deliberately never does — the class-level [Authorize] is what
+    /// keeps that distinction true.
     /// </remarks>
     [HttpGet("papers")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<IEnumerable<ModerationPaperDto>>> GetPapers(
         [FromQuery] PaperStatus status = PaperStatus.Pending,
         CancellationToken cancellationToken = default)
@@ -71,7 +76,7 @@ public class ModerationController : ControllerBase
             .Select(p => new ModerationPaperDto(
                 p.Id,
                 p.SubjectId,
-                p.Subject!.Name,
+                p.Subject!.NameSr,
                 p.ExamType,
                 p.Month,
                 p.Year,
@@ -223,9 +228,7 @@ public class ModerationController : ControllerBase
     /// <para>
     /// SECURITY: this endpoint publishes to the archive without review, which makes
     /// it the most valuable thing here to an attacker. It lives on this controller
-    /// precisely so that the eventual [Authorize] covers it — until then it is as
-    /// open as the rest, and this must not be reachable from outside a development
-    /// machine.
+    /// precisely so that the class-level [Authorize] covers it.
     /// </para>
     /// </remarks>
     [HttpPost("papers/upload")]
@@ -233,12 +236,18 @@ public class ModerationController : ControllerBase
     [RequestSizeLimit(PaperSubmissionService.MaxTotalUploadBytes)]
     [ProducesResponseType(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<UploadedPaperDto>> UploadPaper(
         [FromForm] UploadPaperRequest request,
         CancellationToken cancellationToken)
     {
+        // Recorded against the staff member who uploaded it. This is the one path
+        // into the archive that nobody reviews, so it is the one path where a name
+        // should be attached — public submissions are anonymous and answer for
+        // themselves through a moderator's decision.
         var result = await _submissions.SubmitAsync(
-            request, PaperStatus.Approved, cancellationToken);
+            request, PaperStatus.Approved, User.GetUserId(), cancellationToken);
 
         if (!result.Succeeded)
         {
@@ -273,7 +282,7 @@ public class ModerationController : ControllerBase
             .Select(p => new ModerationPaperDto(
                 p.Id,
                 p.SubjectId,
-                p.Subject!.Name,
+                p.Subject!.NameSr,
                 p.ExamType,
                 p.Month,
                 p.Year,

@@ -28,6 +28,43 @@ public class Paper
     /// <summary>Left at default so SQLite fills it in with CURRENT_TIMESTAMP on insert.</summary>
     public DateTime UploadedAt { get; set; }
 
+    /// <summary>
+    /// The staff account that published this paper directly, or null — which is the
+    /// normal case — for a paper that came in through the public upload.
+    /// </summary>
+    /// <remarks>
+    /// Not a record of who submitted, because submitters are anonymous and no
+    /// column could hold them. It records who used the staff upload endpoint, which
+    /// is the one path that puts a paper into the archive without anybody reviewing
+    /// it. That path deserves a name attached to it; the reviewed path already has
+    /// a moderator's decision behind it.
+    /// <para>
+    /// Set to null rather than cascading when an account is removed, so deleting a
+    /// user never deletes archived papers.
+    /// </para>
+    /// </remarks>
+    public int? SubmittedByUserId { get; set; }
+
+    public User? SubmittedBy { get; set; }
+
+    /// <summary>
+    /// SHA-256 of the claim code handed to the submitter, or null for papers that
+    /// staff uploaded and for rows predating this column.
+    /// </summary>
+    /// <remarks>
+    /// The submitter is anonymous, so there is no account to attach
+    /// <see cref="RejectionReason"/> to and no address to send it to. This is the
+    /// substitute: the code is shown once in the upload response, and presenting it
+    /// again is the only way to learn what happened to the paper.
+    /// <para>
+    /// Only the hash is kept. The code itself exists in the response body and
+    /// nowhere else — which is a real limitation and the honest trade for not
+    /// identifying anybody: a submitter who loses it cannot be helped, because the
+    /// archive genuinely does not know which paper was theirs.
+    /// </para>
+    /// </remarks>
+    public string? ClaimTokenHash { get; set; }
+
     /// <summary>Moderation state. Stored as text and defaulted to Pending in the database.</summary>
     public PaperStatus Status { get; set; } = PaperStatus.Pending;
 

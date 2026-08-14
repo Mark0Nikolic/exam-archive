@@ -13,22 +13,37 @@ public sealed record PaperSubmissionError(string Field, string Message);
 /// </summary>
 public sealed class PaperSubmissionResult
 {
-    private PaperSubmissionResult(Paper? paper, IReadOnlyList<PaperSubmissionError> errors)
+    private PaperSubmissionResult(
+        Paper? paper,
+        string? claimToken,
+        IReadOnlyList<PaperSubmissionError> errors)
     {
         Paper = paper;
+        ClaimToken = claimToken;
         Errors = errors;
     }
 
     public Paper? Paper { get; }
 
+    /// <summary>
+    /// The claim code issued to an anonymous submitter, or null for a staff upload.
+    /// </summary>
+    /// <remarks>
+    /// Carried on the result rather than on the paper because the paper stores only
+    /// the hash. This is the single moment the code exists in readable form, and if
+    /// the caller does not return it to the submitter it is gone.
+    /// </remarks>
+    public string? ClaimToken { get; }
+
     public IReadOnlyList<PaperSubmissionError> Errors { get; }
 
     public bool Succeeded => Paper is not null;
 
-    public static PaperSubmissionResult Success(Paper paper) => new(paper, []);
+    public static PaperSubmissionResult Success(Paper paper, string? claimToken) =>
+        new(paper, claimToken, []);
 
     public static PaperSubmissionResult Failed(IReadOnlyList<PaperSubmissionError> errors) =>
-        new(null, errors);
+        new(null, null, errors);
 }
 
 /// <summary>
@@ -84,22 +99,29 @@ public sealed class PaperSubmissionService
     /// <see cref="PaperStatus.Approved"/> when staff upload a paper directly and
     /// it should appear in the archive at once.
     /// </param>
+    /// <param name="submittedByUserId">
+    /// The staff account publishing directly, or null for a public submission.
+    /// Taken as a parameter rather than read from the request: it comes from the
+    /// session cookie the server itself issued, and anything the client could put in
+    /// the form would be a claim about identity rather than proof of one.
+    /// </param>
     public async Task<PaperSubmissionResult> SubmitAsync(
         UploadPaperRequest request,
         PaperStatus initialStatus,
+        int? submittedByUserId,
         CancellationToken cancellationToken)
     {
         var errors = new List<PaperSubmissionError>();
 
-        // The subject name is needed for the file names anyway, so this doubles as
-        // the existence check — one query instead of two.
-        var subjectName = await _db.Subjects
+        // The subject's code and name are needed for the file names anyway, so
+        // this doubles as the existence check — one query instead of two.
+        var subject = await _db.Subjects
             .AsNoTracking()
             .Where(s => s.Id == request.SubjectId)
-            .Select(s => s.Name)
+            .Select(s => new { s.Code, s.NameSr })
             .FirstOrDefaultAsync(cancellationToken);
 
-        if (subjectName is null)
+        if (subject is null)
         {
             errors.Add(new PaperSubmissionError(
                 nameof(request.SubjectId),
@@ -134,6 +156,13 @@ public sealed class PaperSubmissionService
         var submissionId = PaperFileStorage.NewSubmissionId();
         var written = new List<string>(request.Files.Count);
 
+        // Issued only for submissions that go into the queue. A staff upload is
+        // published immediately and its author can already see it in the archive,
+        // so a code to check on it would answer a question nobody has.
+        var claimToken = initialStatus == PaperStatus.Pending
+            ? ClaimToken.Generate()
+            : null;
+
         var paper = new Paper
         {
             SubjectId = request.SubjectId,
@@ -141,6 +170,8 @@ public sealed class PaperSubmissionService
             Month = request.Month,
             Year = request.Year,
             Status = initialStatus,
+            SubmittedByUserId = submittedByUserId,
+            ClaimTokenHash = claimToken is null ? null : ClaimToken.Hash(claimToken),
 
             // A staff upload is published without passing through the queue, so
             // the decision is made here and now. Recording it keeps the constraint
@@ -160,7 +191,8 @@ public sealed class PaperSubmissionService
                 var type = fileTypes[i];
 
                 var relativePath = PaperFileStorage.BuildRelativePath(
-                    subjectName!, request.ExamType, request.Month, request.Year,
+                    subject!.Code, subject.NameSr, request.ExamType,
+                    request.Month, request.Year,
                     submissionId, pageNumber, type.Extension);
 
                 // Images are cleaned of camera metadata before anything touches the
@@ -210,7 +242,7 @@ public sealed class PaperSubmissionService
             throw;
         }
 
-        return PaperSubmissionResult.Success(paper);
+        return PaperSubmissionResult.Success(paper, claimToken);
     }
 
     /// <summary>

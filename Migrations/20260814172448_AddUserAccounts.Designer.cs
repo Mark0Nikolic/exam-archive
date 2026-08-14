@@ -3,6 +3,7 @@ using System;
 using ExamArchive.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace ExamArchive.Migrations
 {
     [DbContext(typeof(ExamArchiveDbContext))]
-    partial class ExamArchiveDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260814172448_AddUserAccounts")]
+    partial class AddUserAccounts
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.10");
@@ -69,10 +72,6 @@ namespace ExamArchive.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
-                    b.Property<string>("ClaimTokenHash")
-                        .HasMaxLength(64)
-                        .HasColumnType("TEXT");
-
                     b.Property<string>("ExamType")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -110,9 +109,6 @@ namespace ExamArchive.Migrations
                         .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("ClaimTokenHash")
-                        .IsUnique();
 
                     b.HasIndex("SubmittedByUserId");
 
@@ -272,7 +268,7 @@ namespace ExamArchive.Migrations
 
                     b.ToTable("Users", t =>
                         {
-                            t.HasCheckConstraint("CK_User_Role", "[Role] IN ('Moderator', 'Admin')");
+                            t.HasCheckConstraint("CK_User_Role", "[Role] IN ('Student', 'Moderator', 'Admin')");
                         });
                 });
 

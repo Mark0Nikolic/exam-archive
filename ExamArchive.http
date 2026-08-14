@@ -1,4 +1,50 @@
-@ExamArchive_HostAddress = http://localhost:5229
+### The session cookie is marked Secure, so it is only ever set over HTTPS.
+### Pointing this at the http:// port makes sign-in appear to succeed while the
+### browser silently discards the cookie and every later request arrives anonymous.
+@ExamArchive_HostAddress = https://localhost:7294
+
+### ==================== Sign in ====================
+### Only staff have accounts. Students never sign in — uploading is anonymous and
+### browsing is public. Both accounts exist only in Development and are created by
+### SeedData; the password is printed as a warning at startup.
+### Everything under "Moderation" below returns 401 until one of these has run.
+
+### Sign in as a moderator — unlocks the moderation section
+POST {{ExamArchive_HostAddress}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "moderator",
+  "password": "Lozinka!123"
+}
+
+### Sign in as an admin — same powers today, plus the configuration work to come
+POST {{ExamArchive_HostAddress}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "Lozinka!123"
+}
+
+### Wrong password — same message as an unknown username, on purpose
+POST {{ExamArchive_HostAddress}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "moderator",
+  "password": "wrong"
+}
+
+### Who am I? 401 when not signed in — the cookie is HttpOnly, so this is the
+### only way a frontend can find out.
+GET {{ExamArchive_HostAddress}}/api/auth/me
+Accept: application/json
+
+### Sign out
+POST {{ExamArchive_HostAddress}}/api/auth/logout
+
+### ==================== Browsing (anonymous) ====================
 
 ### Majors in Bachelor's
 GET {{ExamArchive_HostAddress}}/api/majors?studiesId=1
@@ -42,6 +88,21 @@ GET {{ExamArchive_HostAddress}}/api/papers/1/files/1
 ### The same page, forced to download
 GET {{ExamArchive_HostAddress}}/api/papers/1/files/1?download=true
 
+### Check on an anonymous submission using the claim code from the upload response.
+### Replace the code below with the "claimToken" the upload actually returned —
+### these are random, so this exact one will 404.
+### Case, dashes and O-for-0 are all forgiven, so it can be typed as written down.
+GET {{ExamArchive_HostAddress}}/api/papers/status/DHA22-9Z2JC-0KDFM-73RZ3
+Accept: application/json
+
+### An unknown code — same 404 as a malformed one, on purpose
+GET {{ExamArchive_HostAddress}}/api/papers/status/AAAAA-BBBBB-CCCCC-DDDDD
+Accept: application/json
+
+### ==================== Moderation (Moderator or Admin) ====================
+### 401 with no session. 403 would mean a signed-in account without the role,
+### which cannot happen while Moderator and Admin are the only two.
+
 ### The review queue, longest-waiting first
 GET {{ExamArchive_HostAddress}}/api/moderation/papers
 Accept: application/json
@@ -73,7 +134,8 @@ GET {{ExamArchive_HostAddress}}/api/moderation/papers?status=Rejected
 Accept: application/json
 
 ### Staff upload — published immediately, skips the queue.
-### SECURITY: unauthenticated today. Must not be reachable outside development.
+### The most dangerous endpoint here: it writes to the public archive with no
+### review. Sign in as moderator or admin above first, or this returns 401.
 POST {{ExamArchive_HostAddress}}/api/moderation/papers/upload
 Content-Type: multipart/form-data; boundary=----Boundary
 

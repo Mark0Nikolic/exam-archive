@@ -1,4 +1,5 @@
 using ExamArchive.Models;
+using ExamArchive.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace ExamArchive.Data;
@@ -18,27 +19,72 @@ public static class SeedData
     /// creating subjects on an empty database, and once to backfill databases
     /// that were seeded before the Code column existed.
     /// </remarks>
-    private static readonly Dictionary<string, string> SubjectCodes = new()
-    {
-        ["Mathematics I"] = "MAT101",
-        ["Linear Algebra"] = "MAT120",
-        ["Statistics"] = "MAT210",
-        ["Programming Fundamentals"] = "IT101",
-        ["Data Structures and Algorithms"] = "IT230",
-        ["Databases"] = "IT240",
-        ["Operating Systems"] = "IT310",
-        ["Computer Networks"] = "IT320",
-        ["Software Architecture"] = "IT330",
-        ["Machine Learning"] = "IT410",
-        ["Cryptography"] = "IT450",
-        ["Digital Electronics"] = "EE110"
-    };
+    private static readonly (string Code, string NameSr, string NameEn)[] SubjectCatalogue =
+    [
+        ("MAT101", "Математика I", "Mathematics I"),
+        ("MAT120", "Линеарна алгебра", "Linear Algebra"),
+        ("MAT210", "Статистика", "Statistics"),
+        ("IT101", "Основе програмирања", "Programming Fundamentals"),
+        ("IT230", "Структуре података и алгоритми", "Data Structures and Algorithms"),
+        ("IT240", "Базе података", "Databases"),
+        ("IT310", "Оперативни системи", "Operating Systems"),
+        ("IT320", "Рачунарске мреже", "Computer Networks"),
+        ("IT330", "Архитектура софтвера", "Software Architecture"),
+        ("IT410", "Машинско учење", "Machine Learning"),
+        ("IT450", "Криптографија", "Cryptography"),
+        ("EE110", "Дигитална електроника", "Digital Electronics"),
+    ];
 
-    public static async Task SeedAsync(ExamArchiveDbContext db)
+    /// <summary>The sample majors, in the same shape as <see cref="SubjectCatalogue"/>.</summary>
+    private static readonly (string NameSr, string NameEn)[] MajorCatalogue =
+    [
+        ("Рачунарске науке", "Computer Science"),
+        ("Софтверско инжењерство", "Software Engineering"),
+        ("Електротехника", "Electrical Engineering"),
+        ("Наука о подацима", "Data Science"),
+        ("Сајбер безбедност", "Cybersecurity"),
+    ];
+
+    /// <summary>
+    /// The password every seeded account is given.
+    /// </summary>
+    /// <remarks>
+    /// Not a secret, and safe to have in the repository, because of where it can be
+    /// used: this file runs only from the development branch in Program.cs, so
+    /// these accounts exist only on a machine running the app in Development. A
+    /// deployment never creates them and there is nothing here for the password to
+    /// unlock.
+    /// <para>
+    /// The reason it is a constant rather than a configuration value is the same
+    /// one: a real password does not belong in appsettings.json either, since that
+    /// file is committed too. When this application gets its first real
+    /// administrator the password will come from user secrets or an environment
+    /// variable, and that account will not be created here.
+    /// </para>
+    /// </remarks>
+    private const string DevPassword = "Lozinka!123";
+
+    /// <summary>
+    /// The accounts created on a development database — one per role, since there
+    /// are only two and both need exercising.
+    /// </summary>
+    private static readonly (string Username, UserRole Role)[] DevAccounts =
+    [
+        ("admin", UserRole.Admin),
+        ("moderator", UserRole.Moderator),
+    ];
+
+    public static async Task SeedAsync(
+        ExamArchiveDbContext db,
+        UserAccountService accounts,
+        ILogger logger)
     {
-        // Runs before the early return below, because a database that was already
-        // seeded is exactly the one whose subjects have no code yet.
+        // All three run before the early return below, because a database that was
+        // already seeded is exactly the one carrying the pre-localization names and
+        // missing the accounts.
+        await SeedUsersAsync(db, accounts, logger);
         await BackfillSubjectCodesAsync(db);
+        await BackfillMajorNamesAsync(db);
 
         // Idempotent: if majors already exist, assume seeding has run.
         if (await db.Majors.AnyAsync())
@@ -47,36 +93,40 @@ public static class SeedData
         }
 
         // Studies come from the migration's HasData, so look them up rather than insert.
-        var bachelors = await db.Studies.SingleAsync(s => s.Name == "Bachelor's");
-        var masters = await db.Studies.SingleAsync(s => s.Name == "Master's");
+        var bachelors = await db.Studies.SingleAsync(s => s.NameSr == "Основне академске студије");
+        var masters = await db.Studies.SingleAsync(s => s.NameSr == "Мастер академске студије");
 
         // ---- Majors ----
-        var cs = new Major { Name = "Computer Science", Studies = bachelors };
-        var se = new Major { Name = "Software Engineering", Studies = bachelors };
-        var ee = new Major { Name = "Electrical Engineering", Studies = bachelors };
-        var ds = new Major { Name = "Data Science", Studies = masters };
-        var cy = new Major { Name = "Cybersecurity", Studies = masters };
+        var cs = new Major { NameSr = "Рачунарске науке", NameEn = "Computer Science", Studies = bachelors };
+        var se = new Major { NameSr = "Софтверско инжењерство", NameEn = "Software Engineering", Studies = bachelors };
+        var ee = new Major { NameSr = "Електротехника", NameEn = "Electrical Engineering", Studies = bachelors };
+        var ds = new Major { NameSr = "Наука о подацима", NameEn = "Data Science", Studies = masters };
+        var cy = new Major { NameSr = "Сајбер безбедност", NameEn = "Cybersecurity", Studies = masters };
 
         db.Majors.AddRange(cs, se, ee, ds, cy);
 
         // ---- Subjects ----
-        // Codes come from SubjectCodes so the two places that need them cannot
-        // disagree. Their shape is the usual one: department prefix, then a number
-        // whose leading digit is roughly the year the course is taught in.
-        static Subject Sub(string name) => new() { Name = name, Code = SubjectCodes[name] };
+        // Serbian is the stored form; English is the optional second name. Codes
+        // follow the usual shape: department prefix, then a number whose leading
+        // digit is roughly the year the course is taught in.
+        static Subject Sub(string code)
+        {
+            var (_, nameSr, nameEn) = SubjectCatalogue.Single(entry => entry.Code == code);
+            return new Subject { Code = code, NameSr = nameSr, NameEn = nameEn };
+        }
 
-        var math1 = Sub("Mathematics I");
-        var linAlg = Sub("Linear Algebra");
-        var progFund = Sub("Programming Fundamentals");
-        var dsa = Sub("Data Structures and Algorithms");
-        var databases = Sub("Databases");
-        var os = Sub("Operating Systems");
-        var networks = Sub("Computer Networks");
-        var ml = Sub("Machine Learning");
-        var crypto = Sub("Cryptography");
-        var stats = Sub("Statistics");
-        var digital = Sub("Digital Electronics");
-        var arch = Sub("Software Architecture");
+        var math1 = Sub("MAT101");
+        var linAlg = Sub("MAT120");
+        var progFund = Sub("IT101");
+        var dsa = Sub("IT230");
+        var databases = Sub("IT240");
+        var os = Sub("IT310");
+        var networks = Sub("IT320");
+        var ml = Sub("IT410");
+        var crypto = Sub("IT450");
+        var stats = Sub("MAT210");
+        var digital = Sub("EE110");
+        var arch = Sub("IT330");
 
         db.Subjects.AddRange(
             math1, linAlg, progFund, dsa, databases,
@@ -137,7 +187,7 @@ public static class SeedData
             DateTime uploadedAt,
             string? rejectionReason = null)
         {
-            var slug = subject.Name.ToLowerInvariant().Replace(' ', '-');
+            var slug = subject.Code!.ToLowerInvariant();
             return new Paper
             {
                 Subject = subject,
@@ -228,35 +278,151 @@ public static class SeedData
     }
 
     /// <summary>
-    /// Fills in course codes on subjects that predate the Code column.
+    /// Creates one account per role on a development database.
+    /// </summary>
+    /// <remarks>
+    /// Separate from the main seed block and run unconditionally, because the
+    /// database that most needs these is the one already full of sample papers from
+    /// before accounts existed — the <c>Majors.AnyAsync</c> early return would skip
+    /// it entirely.
+    /// <para>
+    /// Passwords are hashed through the same service the login endpoint verifies
+    /// with, rather than a hasher constructed here. Two ways of producing a hash is
+    /// how a seeded account ends up unable to sign in.
+    /// </para>
+    /// </remarks>
+    private static async Task SeedUsersAsync(
+        ExamArchiveDbContext db,
+        UserAccountService accounts,
+        ILogger logger)
+    {
+        var existing = await db.Users
+            .Select(u => u.Username)
+            .ToListAsync();
+
+        var missing = DevAccounts
+            .Where(account => !existing.Contains(account.Username, StringComparer.OrdinalIgnoreCase))
+            .ToList();
+
+        if (missing.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var (username, role) in missing)
+        {
+            var user = new User
+            {
+                Username = username,
+                Role = role,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            // Hashed against the user object, which is how PasswordHasher's
+            // interface is shaped — it ignores the instance for the default
+            // algorithm, but passing the real one keeps this correct if it ever
+            // stops ignoring it.
+            user.PasswordHash = accounts.HashPassword(user, DevPassword);
+
+            db.Users.Add(user);
+        }
+
+        await db.SaveChangesAsync();
+
+        // Warning, not information: this line is the only place the password
+        // appears, and it should be conspicuous in the console rather than lost in
+        // startup chatter. It is also the signal that this build is running in
+        // Development — if this ever appears on a deployed instance, something is
+        // configured wrong and accounts with known passwords now exist.
+        logger.LogWarning(
+            "Created development accounts {Accounts}, all with the password '{Password}'. "
+            + "These exist only in the Development environment.",
+            string.Join(", ", missing.Select(account => $"{account.Username} ({account.Role})")),
+            DevPassword);
+    }
+
+    /// <summary>
+    /// Fills in course codes and Serbian names on subjects that predate those
+    /// columns.
     /// </summary>
     /// <remarks>
     /// Development convenience, not a migration. Backfilling sample data in a
     /// migration would carry it into any real deployment, which is the thing this
     /// file exists to avoid — so it lives here and runs only where seeding runs.
-    /// Subjects whose name is not in the map keep a null code, which is a valid
-    /// state rather than something to paper over.
+    /// <para>
+    /// Matched on the English name because the rename migration copied the old
+    /// single Name column into both new ones, leaving English text sitting in
+    /// NameSr. Subjects the catalogue does not know are left exactly as they are:
+    /// guessing a translation would be worse than leaving the row honest.
+    /// </para>
     /// </remarks>
     private static async Task BackfillSubjectCodesAsync(ExamArchiveDbContext db)
     {
-        var uncoded = await db.Subjects
-            .Where(s => s.Code == null)
-            .ToListAsync();
-
-        if (uncoded.Count == 0)
-        {
-            return;
-        }
-
+        var subjects = await db.Subjects.ToListAsync();
         var changed = false;
 
-        foreach (var subject in uncoded)
+        foreach (var subject in subjects)
         {
-            if (SubjectCodes.TryGetValue(subject.Name, out var code))
+            // Matched on the code where there is one, and on the English name
+            // otherwise. Keying only on a missing code would skip every subject
+            // that had already been given one, which is precisely the set whose
+            // names still need correcting.
+            var match = SubjectCatalogue.FirstOrDefault(entry =>
+                entry.Code == subject.Code
+                || entry.NameEn == subject.NameEn
+                || entry.NameEn == subject.NameSr);
+
+            if (match.Code is null)
             {
-                subject.Code = code;
-                changed = true;
+                continue;
             }
+
+            if (subject.Code == match.Code
+                && subject.NameSr == match.NameSr
+                && subject.NameEn == match.NameEn)
+            {
+                continue;
+            }
+
+            subject.Code = match.Code;
+            subject.NameSr = match.NameSr;
+            subject.NameEn = match.NameEn;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            await db.SaveChangesAsync();
+        }
+    }
+
+    /// <summary>
+    /// Replaces the English names the rename migration left in Majors.NameSr with
+    /// their Serbian equivalents.
+    /// </summary>
+    /// <remarks>
+    /// Detected by NameSr still reading as the English name, which is exactly the
+    /// state the migration leaves behind. Majors have no code to key on, so the
+    /// English name is the only handle available.
+    /// </remarks>
+    private static async Task BackfillMajorNamesAsync(ExamArchiveDbContext db)
+    {
+        var majors = await db.Majors.ToListAsync();
+        var changed = false;
+
+        foreach (var major in majors)
+        {
+            var match = MajorCatalogue.FirstOrDefault(entry => entry.NameEn == major.NameSr);
+
+            if (match.NameSr is null)
+            {
+                continue;
+            }
+
+            major.NameSr = match.NameSr;
+            major.NameEn = match.NameEn;
+            changed = true;
         }
 
         if (changed)
