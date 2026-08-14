@@ -101,6 +101,7 @@ public class AuthController : ControllerBase
     /// </remarks>
     [HttpPost("logout")]
     [AllowAnonymous]
+    [AllowsPendingPasswordChange]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     public async Task<IActionResult> Logout()
     {
@@ -126,6 +127,7 @@ public class AuthController : ControllerBase
     /// </remarks>
     [HttpPost("change-password")]
     [Authorize]
+    [AllowsPendingPasswordChange]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
@@ -147,6 +149,20 @@ public class AuthController : ControllerBase
         switch (result)
         {
             case UserAccountService.PasswordChangeResult.Changed:
+                // Re-issued because the cookie may carry the must-change claim, and
+                // the account no longer owes anything. Skipping this would leave
+                // them locked out of every endpoint by a claim describing a
+                // condition they have just fixed.
+                var user = await _accounts.FindByIdAsync(id.Value, cancellationToken);
+
+                if (user is not null)
+                {
+                    await HttpContext.SignInAsync(
+                        CookieAuthenticationDefaults.AuthenticationScheme,
+                        UserAccountService.BuildPrincipal(user),
+                        new AuthenticationProperties { IsPersistent = true });
+                }
+
                 return NoContent();
 
             // The cookie is valid but the account behind it is gone or switched off.
@@ -194,6 +210,7 @@ public class AuthController : ControllerBase
     /// </remarks>
     [HttpGet("me")]
     [Authorize]
+    [AllowsPendingPasswordChange]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public ActionResult<CurrentUserDto> Me()

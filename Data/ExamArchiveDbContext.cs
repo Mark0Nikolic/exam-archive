@@ -284,6 +284,12 @@ public class ExamArchiveDbContext : DbContext
             entity.Property(u => u.IsActive)
                 .HasDefaultValue(true);
 
+            // False for every existing row: accounts that predate this column chose
+            // their own passwords, so demanding a change would lock out working
+            // logins to fix a problem they do not have.
+            entity.Property(u => u.MustChangePassword)
+                .HasDefaultValue(false);
+
             entity.Property(u => u.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasConversion(

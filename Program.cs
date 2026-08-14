@@ -182,6 +182,11 @@ if (allowedOrigins.Length > 0)
 app.UseAuthentication();
 app.UseAuthorization();
 
+// After authorization, so it judges a caller who has already been identified and
+// permitted. An account on an administrator-issued password gets no further than
+// changing it.
+app.UsePasswordChangeGate();
+
 app.MapControllers();
 
 app.Run();

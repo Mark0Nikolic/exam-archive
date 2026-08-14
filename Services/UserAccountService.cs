@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using ExamArchive.Data;
 using ExamArchive.Models;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -56,6 +58,30 @@ public sealed class UserAccountService
     /// </remarks>
     public const int MinimumPasswordLength = 12;
 
+    /// <summary>
+    /// Claim recording that the account is on an administrator-issued password.
+    /// </summary>
+    /// <remarks>
+    /// Carried in the cookie rather than read from the database on every request,
+    /// which is why the change-password endpoint re-issues the cookie the moment the
+    /// password is changed. Without that the claim would outlive the condition and
+    /// the account would stay locked out of everything until the cookie expired.
+    /// </remarks>
+    public const string MustChangePasswordClaim = "exam-archive:must-change-password";
+
+    /// <summary>
+    /// Alphabet for generated passwords: digits and uppercase letters, minus the
+    /// pairs that look alike in most fonts.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately the same idea as <see cref="ClaimToken"/> and deliberately not
+    /// the same code. The two have different rules — a claim code has no length
+    /// policy to satisfy and lives for months, a temporary password must clear
+    /// <see cref="MinimumPasswordLength"/> and should be discarded within minutes —
+    /// so sharing an implementation would mean one change quietly altering the other.
+    /// </remarks>
+    private const string TemporaryPasswordAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
     private readonly ExamArchiveDbContext _db;
     private readonly PasswordHasher<User> _hasher = new();
     private readonly ILogger<UserAccountService> _logger;
@@ -69,6 +95,42 @@ public sealed class UserAccountService
     /// <summary>Produces the stored form of a password.</summary>
     public string HashPassword(User user, string password) =>
         _hasher.HashPassword(user, password);
+
+    /// <summary>
+    /// Builds a password for an administrator to hand over, in the form
+    /// <c>H7K2-9MQX-BD3F-WY6N</c>.
+    /// </summary>
+    /// <remarks>
+    /// Generated rather than chosen by the admin, so the admin never learns a
+    /// password the account keeps. They read this one out once, the owner replaces
+    /// it on first sign-in, and from then on nobody but the owner knows it.
+    /// <para>
+    /// Sixteen symbols from a 32-letter alphabet is 80 bits — far more than the
+    /// policy minimum, which costs nothing because it is typed once and thrown
+    /// away. Reducing each byte modulo 32 is unbiased only because 256 divides
+    /// evenly by 32.
+    /// </para>
+    /// </remarks>
+    public static string GenerateTemporaryPassword()
+    {
+        const int length = 16;
+        const int groupSize = 4;
+
+        var bytes = RandomNumberGenerator.GetBytes(length);
+        var password = new StringBuilder(length + (length / groupSize) - 1);
+
+        for (var i = 0; i < length; i++)
+        {
+            if (i > 0 && i % groupSize == 0)
+            {
+                password.Append('-');
+            }
+
+            password.Append(TemporaryPasswordAlphabet[bytes[i] % TemporaryPasswordAlphabet.Length]);
+        }
+
+        return password.ToString();
+    }
 
     /// <summary>
     /// Checks a username and password, returning the account on success and null
@@ -227,12 +289,24 @@ public sealed class UserAccountService
         }
 
         user.PasswordHash = _hasher.HashPassword(user, newPassword);
+
+        // The account is now on a password only its owner knows, which is exactly
+        // the condition the flag was tracking.
+        user.MustChangePassword = false;
+
         await _db.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation("{Username} changed their password.", user.Username);
 
         return PasswordChangeResult.Changed;
     }
+
+    /// <summary>
+    /// Reads an account by id, for re-issuing a cookie after its claims have gone
+    /// stale.
+    /// </summary>
+    public async Task<User?> FindByIdAsync(int id, CancellationToken cancellationToken) =>
+        await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == id, cancellationToken);
 
     /// <summary>
     /// Builds the identity that goes into the session cookie.
@@ -257,6 +331,14 @@ public sealed class UserAccountService
             new(ClaimTypes.Name, user.Username),
             new(ClaimTypes.Role, user.Role.ToString())
         };
+
+        // Added only when true, so the absence of the claim is the normal state and
+        // an old cookie issued before this existed reads as "nothing pending"
+        // rather than locking its owner out of the application.
+        if (user.MustChangePassword)
+        {
+            claims.Add(new Claim(MustChangePasswordClaim, "true"));
+        }
 
         // The scheme name has to match the one the cookie handler was registered
         // under, or the resulting principal is not considered authenticated.

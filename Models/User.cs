@@ -64,6 +64,23 @@ public class User
     /// </remarks>
     public bool IsActive { get; set; } = true;
 
+    /// <summary>
+    /// Set when an administrator issued this account's current password, and
+    /// cleared as soon as the owner replaces it.
+    /// </summary>
+    /// <remarks>
+    /// While it is set the account can sign in and do nothing else. That is what
+    /// makes an issued password genuinely temporary: without it, the password the
+    /// admin chose stays in use indefinitely and the admin can sign in as that
+    /// person whenever they like, which would make every decision in the moderation
+    /// log deniable.
+    /// <para>
+    /// A flag nobody checks is decoration, so the enforcement lives in middleware
+    /// that refuses every request except the few needed to get out of this state.
+    /// </para>
+    /// </remarks>
+    public bool MustChangePassword { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     /// <summary>
