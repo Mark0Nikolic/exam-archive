@@ -3,6 +3,7 @@ using System;
 using ExamArchive.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace ExamArchive.Migrations
 {
     [DbContext(typeof(ExamArchiveDbContext))]
-    partial class ExamArchiveDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260814114037_AddPaperFiles")]
+    partial class AddPaperFiles
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.10");
@@ -53,10 +56,7 @@ namespace ExamArchive.Migrations
 
                     b.HasIndex("SubjectId");
 
-                    b.ToTable("MajorSubjects", t =>
-                        {
-                            t.HasCheckConstraint("CK_MajorSubject_YearOfStudy", "[YearOfStudy] >= 1 AND [YearOfStudy] <= 6");
-                        });
+                    b.ToTable("MajorSubjects");
                 });
 
             modelBuilder.Entity("ExamArchive.Models.Paper", b =>
@@ -179,19 +179,12 @@ namespace ExamArchive.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
-                    b.Property<string>("Code")
-                        .HasMaxLength(20)
-                        .HasColumnType("TEXT");
-
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("Code")
-                        .IsUnique();
 
                     b.ToTable("Subjects");
                 });

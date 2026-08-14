@@ -39,7 +39,8 @@ public class SubjectsController : ControllerBase
             .Where(ms => ms.MajorId == majorId)
             .OrderBy(ms => ms.YearOfStudy)
             .ThenBy(ms => ms.Subject!.Name)
-            .Select(ms => new SubjectDto(ms.SubjectId, ms.Subject!.Name, ms.YearOfStudy))
+            .Select(ms => new SubjectDto(
+                ms.SubjectId, ms.Subject!.Code, ms.Subject.Name, ms.YearOfStudy))
             .ToListAsync(cancellationToken);
 
         return Ok(subjects);

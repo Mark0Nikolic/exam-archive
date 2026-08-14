@@ -1,3 +1,5 @@
+using ExamArchive.Models;
+
 namespace ExamArchive.Dtos;
 
 /// <summary>
@@ -5,10 +7,15 @@ namespace ExamArchive.Dtos;
 /// built from approved rows, so exposing the field would imply a filter the
 /// browse API does not offer.
 /// </summary>
+/// <param name="PageCount">
+/// How many files make up the paper. A listing needs this to show "4 pages"
+/// without fetching the pages themselves, and a client needs it to know the
+/// range of page numbers it may request.
+/// </param>
 public record PaperDto(
     int Id,
-    string ExamType,
+    ExamType ExamType,
     int Month,
     int Year,
-    string FilePath,
+    int PageCount,
     DateTime UploadedAt);

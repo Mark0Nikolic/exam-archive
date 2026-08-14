@@ -12,6 +12,10 @@ appsettings.*.local.json
 *.db-shm
 *.db-wal
 
+# Pre-migration snapshots. Under WAL a backup is all three files together, so
+# these are taken as a folder rather than a single copied .db.
+backups/
+
 ## ===== Uploaded papers (user content, not source) =====
 uploads/
 

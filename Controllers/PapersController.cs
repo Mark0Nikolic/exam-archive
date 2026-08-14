@@ -1,8 +1,7 @@
-using System.Globalization;
-using System.Text;
 using ExamArchive.Data;
 using ExamArchive.Dtos;
 using ExamArchive.Models;
+using ExamArchive.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.EntityFrameworkCore;
@@ -14,47 +13,33 @@ namespace ExamArchive.Controllers;
 [Produces("application/json")]
 public class PapersController : ControllerBase
 {
-    /// <summary>Matches the CK_Paper_ExamType check constraint. Submitted values are folded to these.</summary>
-    private static readonly string[] AllowedExamTypes = ["Midterm", "Final", "Resit"];
-
-    /// <summary>The archive holds scanned exam papers, so PDF only.</summary>
-    private const string AllowedExtension = ".pdf";
-
-    private const string PdfContentType = "application/pdf";
-
-    /// <summary>Leading segment of every stored path, kept out of the on-disk layout.</summary>
-    private const string UploadsPrefix = "uploads/";
-
-    /// <summary>First bytes of every PDF, checked so a renamed file cannot slip through on extension alone.</summary>
-    private static readonly byte[] PdfMagic = "%PDF-"u8.ToArray();
-
+    /// <summary>Per-page cap. A phone photo is a few megabytes; a scanned PDF rarely more.</summary>
     private const long MaxFileSizeBytes = 20 * 1024 * 1024;
+
+    /// <summary>
+    /// Cap across the whole submission, so thirty pages at the per-page maximum
+    /// cannot be used to push 600 MB through one request.
+    /// </summary>
+    private const long MaxTotalUploadBytes = 100 * 1024 * 1024;
 
     /// <summary>Nothing in this archive predates the university's digital records.</summary>
     private const int MinYear = 1990;
 
     private readonly ExamArchiveDbContext _db;
+    private readonly PaperFileStorage _storage;
+    private readonly PaperFileServer _files;
     private readonly ILogger<PapersController> _logger;
-
-    /// <summary>Absolute path to the folder uploads are written under.</summary>
-    private readonly string _uploadsRoot;
 
     public PapersController(
         ExamArchiveDbContext db,
-        IWebHostEnvironment environment,
-        IConfiguration configuration,
+        PaperFileStorage storage,
+        PaperFileServer files,
         ILogger<PapersController> logger)
     {
         _db = db;
+        _storage = storage;
+        _files = files;
         _logger = logger;
-
-        // Same reasoning as the connection string in Program.cs: a relative path
-        // would resolve against the process working directory, so uploads would
-        // scatter depending on how the app was started. Anchor it to the content root.
-        var configured = configuration["Storage:UploadsRoot"] ?? "uploads";
-        _uploadsRoot = Path.IsPathRooted(configured)
-            ? configured
-            : Path.Combine(environment.ContentRootPath, configured);
     }
 
     /// <summary>
@@ -80,7 +65,7 @@ public class PapersController : ControllerBase
                 p.ExamType,
                 p.Month,
                 p.Year,
-                p.FilePath,
+                p.Files.Count,
                 p.UploadedAt))
             .ToListAsync(cancellationToken);
 
@@ -88,86 +73,70 @@ public class PapersController : ControllerBase
     }
 
     /// <summary>
-    /// Downloads the PDF for an approved paper.
+    /// Lists the pages of an approved paper, in reading order.
     /// </summary>
-    /// <param name="id">The paper to download.</param>
-    [HttpGet("{id:int}/download")]
-    [Produces("application/pdf")]
+    /// <remarks>
+    /// A client needs this before fetching anything: it says how many pages there
+    /// are and what each one is, so an image viewer and a PDF viewer can be chosen
+    /// per page rather than guessed at.
+    /// </remarks>
+    [HttpGet("{id:int}/files")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> DownloadPaper(int id, CancellationToken cancellationToken)
+    public async Task<ActionResult<IEnumerable<PaperFileDto>>> GetPaperFiles(
+        int id,
+        CancellationToken cancellationToken)
     {
-        var paper = await _db.Papers
-            .AsNoTracking()
-            .Where(p => p.Id == id && p.Status == PaperStatus.Approved)
-            .Select(p => new
-            {
-                p.FilePath,
-                SubjectName = p.Subject!.Name,
-                p.ExamType,
-                p.Month,
-                p.Year
-            })
-            .FirstOrDefaultAsync(cancellationToken);
+        var files = await _files.ListAsync(id, approvedOnly: true, cancellationToken);
 
-        // Same 404 whether the paper does not exist or is merely unapproved: a
-        // distinct response would let anyone probe ids to discover that a pending
-        // paper exists, which is exactly what keeping it off the browse API prevents.
-        if (paper is null)
-        {
-            return NotFound();
-        }
-
-        if (!TryResolveStoredPath(paper.FilePath, out var absolutePath))
-        {
-            // Only reachable if a row's path was written by something other than
-            // the upload endpoint, so treat it as data corruption rather than a miss.
-            _logger.LogError(
-                "Paper {PaperId} has stored path {Path}, which escapes the uploads root.",
-                id,
-                paper.FilePath);
-
-            return NotFound();
-        }
-
-        if (!System.IO.File.Exists(absolutePath))
-        {
-            // The row and the disk have drifted apart. Worth a log line — it means
-            // a file was removed out from under the archive.
-            _logger.LogWarning(
-                "Paper {PaperId} points at {Path}, which is missing from disk.",
-                id,
-                absolutePath);
-
-            return NotFound();
-        }
-
-        // Rebuilt from the row rather than reusing the stored name, which carries a
-        // uniqueness suffix that means nothing to whoever is saving the file.
-        var downloadName = string.Create(
-            CultureInfo.InvariantCulture,
-            $"{Slugify(paper.SubjectName)}-{paper.ExamType.ToLowerInvariant()}-{paper.Year}-{paper.Month:D2}{AllowedExtension}");
-
-        // Range processing on: PDF viewers fetch the trailer first, then jump to the
-        // pages they need, rather than pulling the whole file down to show page one.
-        return PhysicalFile(absolutePath, PdfContentType, downloadName, enableRangeProcessing: true);
+        return files is null ? NotFound() : Ok(files);
     }
 
     /// <summary>
-    /// Submits an exam paper to the archive. The file is stored on disk and a
-    /// paper row is created with status "Pending" — it stays out of the browse
-    /// API until a moderator approves it.
+    /// Serves one page of an approved paper.
+    /// </summary>
+    /// <param name="id">The paper.</param>
+    /// <param name="pageNumber">Which page, starting at 1.</param>
+    /// <param name="download">
+    /// True to force a save dialog. Left false the file opens in the browser,
+    /// which is what a student reading an archived paper wants.
+    /// </param>
+    [HttpGet("{id:int}/files/{pageNumber:int}")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetPaperFile(
+        int id,
+        int pageNumber,
+        [FromQuery] bool download,
+        CancellationToken cancellationToken)
+    {
+        // Same 404 whether the paper does not exist or is merely unapproved: a
+        // distinct response would let anyone probe ids to discover that a pending
+        // paper exists, which is exactly what keeping it off the browse API prevents.
+        return await _files.ServeAsync(
+            Response,
+            id,
+            pageNumber,
+            approvedOnly: true,
+            asAttachment: download,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Submits an exam paper to the archive. Files are stored on disk and a paper
+    /// row is created with status "Pending" — it stays out of the browse API until
+    /// a moderator approves it.
     /// </summary>
     [HttpPost("upload")]
     [Consumes("multipart/form-data")]
-    [RequestSizeLimit(MaxFileSizeBytes)]
+    [RequestSizeLimit(MaxTotalUploadBytes)]
     [ProducesResponseType(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<UploadedPaperDto>> UploadPaper(
         [FromForm] UploadPaperRequest request,
         CancellationToken cancellationToken)
     {
-        // The subject name is needed for the file name anyway, so this doubles as
+        // The subject name is needed for the file names anyway, so this doubles as
         // the existence check — one query instead of two.
         var subjectName = await _db.Subjects
             .AsNoTracking()
@@ -182,16 +151,8 @@ public class PapersController : ControllerBase
                 $"Subject {request.SubjectId} does not exist.");
         }
 
-        // Folded to the canonical casing so "final" does not trip CK_Paper_ExamType.
-        var examType = AllowedExamTypes.FirstOrDefault(
-            t => t.Equals(request.ExamType, StringComparison.OrdinalIgnoreCase));
-
-        if (examType is null)
-        {
-            ModelState.AddModelError(
-                nameof(request.ExamType),
-                $"ExamType must be one of: {string.Join(", ", AllowedExamTypes)}.");
-        }
+        // ExamType needs no checking here: model binding has already rejected
+        // anything outside the enum with a 400.
 
         // Next year is allowed: an exam sat in January is often archived against
         // the academic year it belongs to rather than the calendar year it fell in.
@@ -203,43 +164,25 @@ public class PapersController : ControllerBase
                 $"Year must be between {MinYear} and {maxYear}.");
         }
 
-        // File is [Required], so a null one has already failed model validation —
-        // skip the content checks rather than report a second, confusing error.
-        if (request.File is not null)
-        {
-            await ValidateFileAsync(request.File, cancellationToken);
-        }
+        // Count is enforced by attributes, so an empty list has already failed
+        // model validation — skip the content checks rather than report a second,
+        // confusing error on top of it.
+        var fileTypes = request.Files.Count > 0
+            ? await ValidateFilesAsync(request.Files, cancellationToken)
+            : null;
 
-        if (!ModelState.IsValid)
+        if (!ModelState.IsValid || fileTypes is null)
         {
             return ValidationProblem(ModelState);
         }
 
-        var relativePath = BuildRelativePath(subjectName!, examType!, request.Month, request.Year);
-
-        if (!TryResolveStoredPath(relativePath, out var absolutePath))
-        {
-            // BuildRelativePath only ever produces paths under the uploads root, so
-            // reaching this means the generator itself is broken.
-            throw new InvalidOperationException(
-                $"Generated upload path '{relativePath}' resolved outside the uploads root.");
-        }
-
-        Directory.CreateDirectory(Path.GetDirectoryName(absolutePath)!);
-
-        // CreateNew rather than Create: if the generated name somehow already
-        // exists, fail loudly instead of overwriting somebody else's paper.
-        await using (var destination = new FileStream(
-            absolutePath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-        {
-            await request.File!.CopyToAsync(destination, cancellationToken);
-        }
+        var submissionId = PaperFileStorage.NewSubmissionId();
+        var written = new List<string>(request.Files.Count);
 
         var paper = new Paper
         {
             SubjectId = request.SubjectId,
-            FilePath = relativePath,
-            ExamType = examType!,
+            ExamType = request.ExamType,
             Month = request.Month,
             Year = request.Year,
             Status = PaperStatus.Pending
@@ -247,16 +190,37 @@ public class PapersController : ControllerBase
 
         try
         {
-            // File first, row second. The reverse order would leave a row in the
-            // browse index pointing at a file that was never written; this order
-            // can at worst leave an unreferenced file, which the cleanup below
-            // handles and which is harmless if that too fails.
+            // Files first, row second. The reverse order would leave a row pointing
+            // at files that were never written; this order can at worst leave
+            // unreferenced files, which the cleanup below handles and which are
+            // harmless if that too fails.
+            for (var i = 0; i < request.Files.Count; i++)
+            {
+                var pageNumber = i + 1;
+                var type = fileTypes[i];
+
+                var relativePath = PaperFileStorage.BuildRelativePath(
+                    subjectName!, request.ExamType, request.Month, request.Year,
+                    submissionId, pageNumber, type.Extension);
+
+                var size = await _storage.SaveAsync(request.Files[i], relativePath, cancellationToken);
+                written.Add(relativePath);
+
+                paper.Files.Add(new PaperFile
+                {
+                    StoredPath = relativePath,
+                    ContentType = type.ContentType,
+                    PageNumber = pageNumber,
+                    SizeBytes = size
+                });
+            }
+
             _db.Papers.Add(paper);
             await _db.SaveChangesAsync(cancellationToken);
         }
         catch
         {
-            TryDeleteOrphan(absolutePath);
+            _storage.TryDeleteOrphans(written, _logger);
             throw;
         }
 
@@ -271,144 +235,100 @@ public class PapersController : ControllerBase
                 paper.ExamType,
                 paper.Month,
                 paper.Year,
-                paper.FilePath,
                 paper.UploadedAt,
-                paper.Status));
+                paper.Status,
+                [.. paper.Files.Select(f => new PaperFileDto(f.PageNumber, f.ContentType, f.SizeBytes))]));
     }
 
     /// <summary>
-    /// Checks the uploaded file is a non-empty, reasonably sized PDF, recording
-    /// any problems on <see cref="ModelState"/>.
+    /// Checks every uploaded page is a non-empty, reasonably sized file in an
+    /// accepted format, recording any problems on <see cref="ModelState"/>.
     /// </summary>
-    private async Task ValidateFileAsync(IFormFile file, CancellationToken cancellationToken)
+    /// <returns>
+    /// The resolved format of each file, positionally, or null if any file failed.
+    /// </returns>
+    private async Task<PaperFileType[]?> ValidateFilesAsync(
+        List<IFormFile> files,
+        CancellationToken cancellationToken)
     {
-        if (file.Length == 0)
+        var resolved = new PaperFileType[files.Count];
+        var totalBytes = 0L;
+        var valid = true;
+
+        for (var i = 0; i < files.Count; i++)
         {
-            ModelState.AddModelError(nameof(UploadPaperRequest.File), "The file is empty.");
-            return;
-        }
+            var file = files[i];
 
-        if (file.Length > MaxFileSizeBytes)
-        {
-            ModelState.AddModelError(
-                nameof(UploadPaperRequest.File),
-                $"The file exceeds the {MaxFileSizeBytes / (1024 * 1024)} MB limit.");
-            return;
-        }
+            // Page numbers, not indexes: the error is read by whoever picked the
+            // files, and they counted from one.
+            var label = $"{nameof(UploadPaperRequest.Files)}[{i}]";
+            var page = i + 1;
 
-        var extension = Path.GetExtension(file.FileName);
-        if (!AllowedExtension.Equals(extension, StringComparison.OrdinalIgnoreCase))
-        {
-            ModelState.AddModelError(
-                nameof(UploadPaperRequest.File),
-                $"Only {AllowedExtension} files are accepted.");
-            return;
-        }
+            totalBytes += file.Length;
 
-        // An extension is just a claim by the client, so confirm the header too.
-        await using var stream = file.OpenReadStream();
-        var header = new byte[PdfMagic.Length];
-        var read = await stream.ReadAtLeastAsync(
-            header, header.Length, throwOnEndOfStream: false, cancellationToken);
-
-        if (read < header.Length || !header.SequenceEqual(PdfMagic))
-        {
-            ModelState.AddModelError(
-                nameof(UploadPaperRequest.File),
-                "The file is not a valid PDF.");
-        }
-    }
-
-    /// <summary>
-    /// Builds the stored path, matching the /uploads/{year}/{name}.pdf shape the
-    /// existing rows use. The client's file name is never part of it — it is
-    /// attacker-controlled and could carry separators or traversal segments.
-    /// </summary>
-    private static string BuildRelativePath(string subjectName, string examType, int month, int year)
-    {
-        // Short suffix keeps the name readable while separating repeat uploads of
-        // the same exam, which are otherwise identical.
-        var unique = Guid.NewGuid().ToString("N")[..8];
-        var name = string.Create(
-            CultureInfo.InvariantCulture,
-            $"{Slugify(subjectName)}-{examType.ToLowerInvariant()}-{year}-{month:D2}-{unique}{AllowedExtension}");
-
-        return $"/uploads/{year}/{name}";
-    }
-
-    /// <summary>
-    /// Maps a stored path onto the configured uploads folder, refusing anything that
-    /// resolves outside it. Paths from <see cref="BuildRelativePath"/> are always
-    /// safe; rows edited by hand, seeded, or restored from a backup may not be, and
-    /// this is the one place a stored path becomes a filesystem read.
-    /// </summary>
-    private bool TryResolveStoredPath(string storedPath, out string absolutePath)
-    {
-        absolutePath = string.Empty;
-
-        if (string.IsNullOrWhiteSpace(storedPath))
-        {
-            return false;
-        }
-
-        var relative = storedPath.Replace('\\', '/').TrimStart('/');
-
-        if (relative.StartsWith(UploadsPrefix, StringComparison.OrdinalIgnoreCase))
-        {
-            relative = relative[UploadsPrefix.Length..];
-        }
-
-        var root = Path.GetFullPath(_uploadsRoot).TrimEnd(Path.DirectorySeparatorChar);
-        var candidate = Path.GetFullPath(
-            Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)));
-
-        // GetFullPath has already collapsed any ".." segments, so comparing prefixes
-        // is meaningful here in a way that inspecting the raw string would not be.
-        if (!candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        absolutePath = candidate;
-        return true;
-    }
-
-    /// <summary>Lowercases to ASCII letters, digits and single dashes — safe on any filesystem.</summary>
-    private static string Slugify(string value)
-    {
-        var slug = new StringBuilder(value.Length);
-
-        foreach (var c in value)
-        {
-            if (char.IsAsciiLetterOrDigit(c))
+            if (file.Length == 0)
             {
-                slug.Append(char.ToLowerInvariant(c));
+                ModelState.AddModelError(label, $"Page {page} is empty.");
+                valid = false;
+                continue;
             }
-            else if (slug.Length > 0 && slug[^1] != '-')
+
+            if (file.Length > MaxFileSizeBytes)
             {
-                slug.Append('-');
+                ModelState.AddModelError(
+                    label,
+                    $"Page {page} exceeds the {MaxFileSizeBytes / (1024 * 1024)} MB per-file limit.");
+                valid = false;
+                continue;
             }
+
+            var type = PaperFileTypes.FromExtension(file.FileName);
+            if (type is null)
+            {
+                ModelState.AddModelError(
+                    label,
+                    $"Page {page} must be one of: {string.Join(", ", PaperFileTypes.AcceptedExtensions)}.");
+                valid = false;
+                continue;
+            }
+
+            // An extension is just a claim by the client, so confirm the header too.
+            await using var stream = file.OpenReadStream();
+            var header = new byte[PaperFileTypes.MaxSignatureLength];
+            var read = await stream.ReadAtLeastAsync(
+                header, header.Length, throwOnEndOfStream: false, cancellationToken);
+
+            if (!type.Matches(header.AsSpan(0, read)))
+            {
+                ModelState.AddModelError(
+                    label,
+                    $"Page {page} is not a valid {type.Extension[1..].ToUpperInvariant()} file.");
+                valid = false;
+                continue;
+            }
+
+            resolved[i] = type;
         }
 
-        return slug.ToString().TrimEnd('-') is { Length: > 0 } trimmed ? trimmed : "subject";
-    }
+        if (totalBytes > MaxTotalUploadBytes)
+        {
+            ModelState.AddModelError(
+                nameof(UploadPaperRequest.Files),
+                $"The submission exceeds the {MaxTotalUploadBytes / (1024 * 1024)} MB total limit.");
+            valid = false;
+        }
 
-    /// <summary>
-    /// Removes a file whose row failed to save. Best effort: the upload has already
-    /// failed, and masking that with a delete error would only make it harder to diagnose.
-    /// </summary>
-    private void TryDeleteOrphan(string absolutePath)
-    {
-        try
+        // A paper of mixed formats is almost certainly a mistake — a PDF is already
+        // the whole document, so pairing it with loose images means the submitter
+        // picked the wrong files.
+        if (valid && resolved.Any(t => t == PaperFileTypes.Pdf) && resolved.Length > 1)
         {
-            System.IO.File.Delete(absolutePath);
+            ModelState.AddModelError(
+                nameof(UploadPaperRequest.Files),
+                "A PDF must be submitted on its own. Upload either one PDF or a set of images.");
+            valid = false;
         }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(
-                ex,
-                "Failed to remove orphaned upload {Path} after the paper row could not be saved.",
-                absolutePath);
-        }
+
+        return valid ? resolved : null;
     }
 }

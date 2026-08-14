@@ -15,6 +15,7 @@ public class ExamArchiveDbContext : DbContext
     public DbSet<Subject> Subjects => Set<Subject>();
     public DbSet<MajorSubject> MajorSubjects => Set<MajorSubject>();
     public DbSet<Paper> Papers => Set<Paper>();
+    public DbSet<PaperFile> PaperFiles => Set<PaperFile>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -49,6 +50,17 @@ public class ExamArchiveDbContext : DbContext
             entity.Property(s => s.Name)
                 .IsRequired()
                 .HasMaxLength(200);
+
+            entity.Property(s => s.Code)
+                .HasMaxLength(20);
+
+            // Unique, so the database itself rejects a duplicate code no matter
+            // what inserts it. A code that can repeat is not an identifier, just a
+            // second name. Rows without a code are exempt: SQLite treats NULLs as
+            // distinct from one another in a unique index, which is what allows
+            // subjects to exist before their code is known.
+            entity.HasIndex(s => s.Code)
+                .IsUnique();
         });
 
         modelBuilder.Entity<MajorSubject>(entity =>
@@ -67,16 +79,23 @@ public class ExamArchiveDbContext : DbContext
                 .WithMany(s => s.MajorSubjects)
                 .HasForeignKey(ms => ms.SubjectId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            entity.ToTable(t =>
+            {
+                // Six covers a 3-4 year bachelor's and a 1-2 year master's. Without
+                // this the column accepts year 47 or -3 as readily as year 2.
+                t.HasCheckConstraint(
+                    "CK_MajorSubject_YearOfStudy",
+                    "[YearOfStudy] >= 1 AND [YearOfStudy] <= 6");
+            });
         });
 
         modelBuilder.Entity<Paper>(entity =>
         {
-            entity.Property(p => p.FilePath)
-                .IsRequired()
-                .HasMaxLength(500);
-
+            // Stored as the enum's name for the same reasons as Status below.
             entity.Property(p => p.ExamType)
                 .IsRequired()
+                .HasConversion<string>()
                 .HasMaxLength(20);
 
             // Stored as the enum's name, not its number: it keeps the existing
@@ -89,8 +108,18 @@ public class ExamArchiveDbContext : DbContext
                 .HasDefaultValue(PaperStatus.Pending);
 
             // Filled in by SQLite on insert; stored as UTC.
+            //
+            // The conversion on the way out is what makes that true in practice.
+            // SQLite has no date type, so a DateTime read back from TEXT arrives
+            // with Kind = Unspecified, and System.Text.Json then writes it without
+            // a trailing Z. A browser parsing "2026-08-14T11:42:47" treats it as
+            // local time, so every timestamp was landing hours off. Stamping the
+            // kind on read makes the serialized form say what the column means.
             entity.Property(p => p.UploadedAt)
-                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasConversion(
+                    value => value,
+                    value => DateTime.SpecifyKind(value, DateTimeKind.Utc));
 
             // Restrict: a subject cannot be deleted while it still has papers.
             entity.HasOne(p => p.Subject)
@@ -114,6 +143,57 @@ public class ExamArchiveDbContext : DbContext
                 t.HasCheckConstraint(
                     "CK_Paper_Status",
                     "[Status] IN ('Pending', 'Approved', 'Rejected')");
+            });
+        });
+
+        modelBuilder.Entity<PaperFile>(entity =>
+        {
+            entity.Property(f => f.StoredPath)
+                .IsRequired()
+                .HasMaxLength(500);
+
+            entity.Property(f => f.ContentType)
+                .IsRequired()
+                .HasMaxLength(100);
+
+            // Cascade: a file has no meaning once its paper is gone. Note this
+            // deletes rows, not the bytes on disk — whatever removes a paper is
+            // responsible for the files, or they leak.
+            entity.HasOne(f => f.Paper)
+                .WithMany(p => p.Files)
+                .HasForeignKey(f => f.PaperId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Unique rather than merely indexed: two rows claiming the same page
+            // of the same paper would make the reading order ambiguous, and the
+            // database is the only place that can actually rule it out.
+            entity.HasIndex(f => new { f.PaperId, f.PageNumber })
+                .IsUnique();
+
+            entity.ToTable(t =>
+            {
+                // Built from PaperFileTypes so the constraint cannot drift from the
+                // validation. Adding a format there registers as a model change and
+                // EF will ask for a migration, which is the intended nudge.
+                var contentTypes = string.Join(
+                    ", ",
+                    PaperFileTypes.All.Select(type => $"'{type.ContentType}'"));
+
+                t.HasCheckConstraint(
+                    "CK_PaperFile_ContentType",
+                    $"[ContentType] IN ({contentTypes})");
+
+                t.HasCheckConstraint(
+                    "CK_PaperFile_PageNumber",
+                    "[PageNumber] >= 1");
+
+                // Zero is permitted and means "size not recorded" — rows migrated
+                // from the single-FilePath schema predate size tracking, and SQL
+                // cannot measure a file on disk to backfill them. Uploads always
+                // write a real size, so only historical rows carry 0.
+                t.HasCheckConstraint(
+                    "CK_PaperFile_SizeBytes",
+                    "[SizeBytes] >= 0");
             });
         });
     }

@@ -3,21 +3,18 @@ using ExamArchive.Models;
 namespace ExamArchive.Dtos;
 
 /// <summary>
-/// A paper as it appears in the moderation queue.
+/// A paper as it appears in the review queue. Carries more than
+/// <see cref="PaperDto"/> because a moderator is judging the submission itself,
+/// not browsing an archive: the subject name saves a lookup per row, and the
+/// status is the field being acted on.
 /// </summary>
-/// <remarks>
-/// Deliberately richer than <see cref="PaperDto"/>: a moderator is deciding
-/// whether to publish this row, so they need the subject spelled out rather than
-/// an id, and they need the status that <see cref="PaperDto"/> omits precisely
-/// because the browse API only ever serves approved papers.
-/// </remarks>
 public record ModerationPaperDto(
     int Id,
     int SubjectId,
     string SubjectName,
-    string ExamType,
+    ExamType ExamType,
     int Month,
     int Year,
-    string FilePath,
+    int PageCount,
     DateTime UploadedAt,
     PaperStatus Status);

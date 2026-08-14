@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using ExamArchive.Data;
+using ExamArchive.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
@@ -25,6 +26,11 @@ if (!string.IsNullOrEmpty(connection.DataSource)
 
 builder.Services.AddDbContext<ExamArchiveDbContext>(options =>
     options.UseSqlite(connection.ConnectionString));
+
+// Storage is stateless and resolves its root once, so a singleton. The server
+// wraps a DbContext and has to follow its scope.
+builder.Services.AddSingleton<PaperFileStorage>();
+builder.Services.AddScoped<PaperFileServer>();
 
 // Enums serialize as their name, not their number. Without this, PaperStatus
 // would reach clients as 0/1/2 — unreadable, and it would silently change the

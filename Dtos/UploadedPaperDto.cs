@@ -10,9 +10,9 @@ namespace ExamArchive.Dtos;
 public record UploadedPaperDto(
     int Id,
     int SubjectId,
-    string ExamType,
+    ExamType ExamType,
     int Month,
     int Year,
-    string FilePath,
     DateTime UploadedAt,
-    PaperStatus Status);
+    PaperStatus Status,
+    IReadOnlyList<PaperFileDto> Files);

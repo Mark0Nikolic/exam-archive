@@ -11,10 +11,14 @@ public class Paper
 
     public Subject? Subject { get; set; }
 
-    public string FilePath { get; set; } = string.Empty;
+    /// <summary>
+    /// The paper's pages, in reading order. A scan is a single PDF; a photographed
+    /// paper is one image per page.
+    /// </summary>
+    public List<PaperFile> Files { get; set; } = [];
 
-    /// <summary>"Midterm", "Final" or "Resit" — enforced by a check constraint.</summary>
-    public string ExamType { get; set; } = string.Empty;
+    /// <summary>Which sitting this paper is from. Stored as text and enforced by a check constraint.</summary>
+    public ExamType ExamType { get; set; }
 
     /// <summary>Month the exam was held, 1-12.</summary>
     public int Month { get; set; }

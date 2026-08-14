@@ -1,4 +1,4 @@
-@ExamArchive_HostAddress = http://localhost:5199
+@ExamArchive_HostAddress = http://localhost:5229
 
 ### Majors in Bachelor's
 GET {{ExamArchive_HostAddress}}/api/majors?studiesId=1
@@ -31,5 +31,30 @@ Accept: application/json
 ### Linear Algebra (id 2) — taught in two majors, but the archive is empty
 GET {{ExamArchive_HostAddress}}/api/papers?subjectId=2
 Accept: application/json
+
+### Pages of an approved paper
+GET {{ExamArchive_HostAddress}}/api/papers/1/files
+Accept: application/json
+
+### One page, opened in the browser
+GET {{ExamArchive_HostAddress}}/api/papers/1/files/1
+
+### The same page, forced to download
+GET {{ExamArchive_HostAddress}}/api/papers/1/files/1?download=true
+
+### The review queue, longest-waiting first
+GET {{ExamArchive_HostAddress}}/api/moderation/papers
+Accept: application/json
+
+### Papers already rejected
+GET {{ExamArchive_HostAddress}}/api/moderation/papers?status=Rejected
+Accept: application/json
+
+### Pages of a submitted paper — answers for pending papers, unlike the browse API
+GET {{ExamArchive_HostAddress}}/api/moderation/papers/28/files
+Accept: application/json
+
+### Preview a submission in the browser, no download step
+GET {{ExamArchive_HostAddress}}/api/moderation/papers/28/files/1
 
 ###

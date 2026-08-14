@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using ExamArchive.Models;
 
 namespace ExamArchive.Dtos;
 
@@ -9,16 +10,42 @@ namespace ExamArchive.Dtos;
 /// </summary>
 public class UploadPaperRequest
 {
-    [Required(ErrorMessage = "A file is required.")]
-    public IFormFile? File { get; set; }
+    /// <summary>
+    /// The paper's pages, in reading order — one PDF, or one image per page.
+    /// </summary>
+    /// <remarks>
+    /// Order is taken from the order the parts arrive in the request, which is
+    /// the order the client listed them. Multipart preserves this, so no separate
+    /// page-number field is needed.
+    /// </remarks>
+    [Required(ErrorMessage = "At least one file is required.")]
+    [MinLength(1, ErrorMessage = "At least one file is required.")]
+    // Constant interpolation only folds string constants, so the count is spelled
+    // out in the message and kept in step with MaxFiles by hand.
+    [MaxLength(MaxFiles, ErrorMessage = "A paper cannot have more than 30 pages.")]
+    public List<IFormFile> Files { get; set; } = [];
+
+    /// <summary>
+    /// Upper bound on pages in one submission. Generous for a real exam, low
+    /// enough that a single request cannot tie up the server indefinitely.
+    /// </summary>
+    public const int MaxFiles = 30;
 
     /// <summary>The subject the paper belongs to. Must already exist.</summary>
     [Range(1, int.MaxValue, ErrorMessage = "SubjectId must be a positive id.")]
     public int SubjectId { get; set; }
 
-    /// <summary>"Midterm", "Final" or "Resit". Matched case-insensitively.</summary>
+    /// <summary>
+    /// "Midterm", "Final" or "Resit". Matched case-insensitively.
+    /// </summary>
+    /// <remarks>
+    /// Typed as the enum so model binding rejects anything else with a 400 before
+    /// the action runs. As a string this had to be folded to the canonical casing
+    /// by hand, and a value the constraint did not allow only surfaced as a
+    /// database error at the end of the upload.
+    /// </remarks>
     [Required(ErrorMessage = "ExamType is required.")]
-    public string ExamType { get; set; } = string.Empty;
+    public ExamType ExamType { get; set; }
 
     /// <summary>Month the exam was held, 1-12.</summary>
     [Range(1, 12, ErrorMessage = "Month must be between 1 and 12.")]
