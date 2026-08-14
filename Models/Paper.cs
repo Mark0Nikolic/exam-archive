@@ -30,4 +30,26 @@ public class Paper
 
     /// <summary>Moderation state. Stored as text and defaulted to Pending in the database.</summary>
     public PaperStatus Status { get; set; } = PaperStatus.Pending;
+
+    /// <summary>
+    /// When the paper left the pending queue, or null while it is still waiting.
+    /// </summary>
+    /// <remarks>
+    /// Null on a decided paper means the decision predates this column, not that
+    /// it was never made — the check constraint permits that rather than forcing a
+    /// fabricated timestamp onto historical rows.
+    /// </remarks>
+    public DateTime? ReviewedAt { get; set; }
+
+    /// <summary>
+    /// Why the paper was turned down, shown to whoever submitted it. Null unless
+    /// <see cref="Status"/> is <see cref="PaperStatus.Rejected"/>.
+    /// </summary>
+    /// <remarks>
+    /// Cleared when a rejected paper is later approved, so the field can never
+    /// contradict the status. That does discard the old reason: without a separate
+    /// history table there is nowhere to keep it, and a stale reason sitting on an
+    /// approved paper would be worse than none.
+    /// </remarks>
+    public string? RejectionReason { get; set; }
 }

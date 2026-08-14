@@ -13,33 +13,18 @@ namespace ExamArchive.Controllers;
 [Produces("application/json")]
 public class PapersController : ControllerBase
 {
-    /// <summary>Per-page cap. A phone photo is a few megabytes; a scanned PDF rarely more.</summary>
-    private const long MaxFileSizeBytes = 20 * 1024 * 1024;
-
-    /// <summary>
-    /// Cap across the whole submission, so thirty pages at the per-page maximum
-    /// cannot be used to push 600 MB through one request.
-    /// </summary>
-    private const long MaxTotalUploadBytes = 100 * 1024 * 1024;
-
-    /// <summary>Nothing in this archive predates the university's digital records.</summary>
-    private const int MinYear = 1990;
-
     private readonly ExamArchiveDbContext _db;
-    private readonly PaperFileStorage _storage;
     private readonly PaperFileServer _files;
-    private readonly ILogger<PapersController> _logger;
+    private readonly PaperSubmissionService _submissions;
 
     public PapersController(
         ExamArchiveDbContext db,
-        PaperFileStorage storage,
         PaperFileServer files,
-        ILogger<PapersController> logger)
+        PaperSubmissionService submissions)
     {
         _db = db;
-        _storage = storage;
         _files = files;
-        _logger = logger;
+        _submissions = submissions;
     }
 
     /// <summary>
@@ -129,206 +114,31 @@ public class PapersController : ControllerBase
     /// </summary>
     [HttpPost("upload")]
     [Consumes("multipart/form-data")]
-    [RequestSizeLimit(MaxTotalUploadBytes)]
+    [RequestSizeLimit(PaperSubmissionService.MaxTotalUploadBytes)]
     [ProducesResponseType(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<UploadedPaperDto>> UploadPaper(
         [FromForm] UploadPaperRequest request,
         CancellationToken cancellationToken)
     {
-        // The subject name is needed for the file names anyway, so this doubles as
-        // the existence check — one query instead of two.
-        var subjectName = await _db.Subjects
-            .AsNoTracking()
-            .Where(s => s.Id == request.SubjectId)
-            .Select(s => s.Name)
-            .FirstOrDefaultAsync(cancellationToken);
+        // Pending: anyone can reach this endpoint, so nothing submitted through it
+        // is published until a moderator has looked at it.
+        var result = await _submissions.SubmitAsync(
+            request, PaperStatus.Pending, cancellationToken);
 
-        if (subjectName is null)
+        if (!result.Succeeded)
         {
-            ModelState.AddModelError(
-                nameof(request.SubjectId),
-                $"Subject {request.SubjectId} does not exist.");
-        }
-
-        // ExamType needs no checking here: model binding has already rejected
-        // anything outside the enum with a 400.
-
-        // Next year is allowed: an exam sat in January is often archived against
-        // the academic year it belongs to rather than the calendar year it fell in.
-        var maxYear = DateTime.UtcNow.Year + 1;
-        if (request.Year < MinYear || request.Year > maxYear)
-        {
-            ModelState.AddModelError(
-                nameof(request.Year),
-                $"Year must be between {MinYear} and {maxYear}.");
-        }
-
-        // Count is enforced by attributes, so an empty list has already failed
-        // model validation — skip the content checks rather than report a second,
-        // confusing error on top of it.
-        var fileTypes = request.Files.Count > 0
-            ? await ValidateFilesAsync(request.Files, cancellationToken)
-            : null;
-
-        if (!ModelState.IsValid || fileTypes is null)
-        {
-            return ValidationProblem(ModelState);
-        }
-
-        var submissionId = PaperFileStorage.NewSubmissionId();
-        var written = new List<string>(request.Files.Count);
-
-        var paper = new Paper
-        {
-            SubjectId = request.SubjectId,
-            ExamType = request.ExamType,
-            Month = request.Month,
-            Year = request.Year,
-            Status = PaperStatus.Pending
-        };
-
-        try
-        {
-            // Files first, row second. The reverse order would leave a row pointing
-            // at files that were never written; this order can at worst leave
-            // unreferenced files, which the cleanup below handles and which are
-            // harmless if that too fails.
-            for (var i = 0; i < request.Files.Count; i++)
+            foreach (var error in result.Errors)
             {
-                var pageNumber = i + 1;
-                var type = fileTypes[i];
-
-                var relativePath = PaperFileStorage.BuildRelativePath(
-                    subjectName!, request.ExamType, request.Month, request.Year,
-                    submissionId, pageNumber, type.Extension);
-
-                var size = await _storage.SaveAsync(request.Files[i], relativePath, cancellationToken);
-                written.Add(relativePath);
-
-                paper.Files.Add(new PaperFile
-                {
-                    StoredPath = relativePath,
-                    ContentType = type.ContentType,
-                    PageNumber = pageNumber,
-                    SizeBytes = size
-                });
+                ModelState.AddModelError(error.Field, error.Message);
             }
 
-            _db.Papers.Add(paper);
-            await _db.SaveChangesAsync(cancellationToken);
-        }
-        catch
-        {
-            _storage.TryDeleteOrphans(written, _logger);
-            throw;
+            return ValidationProblem(ModelState);
         }
 
         // 201 without a Location header: a pending paper has no address yet. It is
         // deliberately absent from GET /api/papers, and pointing at that list would
         // send the caller somewhere their paper does not appear.
-        return StatusCode(
-            StatusCodes.Status201Created,
-            new UploadedPaperDto(
-                paper.Id,
-                paper.SubjectId,
-                paper.ExamType,
-                paper.Month,
-                paper.Year,
-                paper.UploadedAt,
-                paper.Status,
-                [.. paper.Files.Select(f => new PaperFileDto(f.PageNumber, f.ContentType, f.SizeBytes))]));
-    }
-
-    /// <summary>
-    /// Checks every uploaded page is a non-empty, reasonably sized file in an
-    /// accepted format, recording any problems on <see cref="ModelState"/>.
-    /// </summary>
-    /// <returns>
-    /// The resolved format of each file, positionally, or null if any file failed.
-    /// </returns>
-    private async Task<PaperFileType[]?> ValidateFilesAsync(
-        List<IFormFile> files,
-        CancellationToken cancellationToken)
-    {
-        var resolved = new PaperFileType[files.Count];
-        var totalBytes = 0L;
-        var valid = true;
-
-        for (var i = 0; i < files.Count; i++)
-        {
-            var file = files[i];
-
-            // Page numbers, not indexes: the error is read by whoever picked the
-            // files, and they counted from one.
-            var label = $"{nameof(UploadPaperRequest.Files)}[{i}]";
-            var page = i + 1;
-
-            totalBytes += file.Length;
-
-            if (file.Length == 0)
-            {
-                ModelState.AddModelError(label, $"Page {page} is empty.");
-                valid = false;
-                continue;
-            }
-
-            if (file.Length > MaxFileSizeBytes)
-            {
-                ModelState.AddModelError(
-                    label,
-                    $"Page {page} exceeds the {MaxFileSizeBytes / (1024 * 1024)} MB per-file limit.");
-                valid = false;
-                continue;
-            }
-
-            var type = PaperFileTypes.FromExtension(file.FileName);
-            if (type is null)
-            {
-                ModelState.AddModelError(
-                    label,
-                    $"Page {page} must be one of: {string.Join(", ", PaperFileTypes.AcceptedExtensions)}.");
-                valid = false;
-                continue;
-            }
-
-            // An extension is just a claim by the client, so confirm the header too.
-            await using var stream = file.OpenReadStream();
-            var header = new byte[PaperFileTypes.MaxSignatureLength];
-            var read = await stream.ReadAtLeastAsync(
-                header, header.Length, throwOnEndOfStream: false, cancellationToken);
-
-            if (!type.Matches(header.AsSpan(0, read)))
-            {
-                ModelState.AddModelError(
-                    label,
-                    $"Page {page} is not a valid {type.Extension[1..].ToUpperInvariant()} file.");
-                valid = false;
-                continue;
-            }
-
-            resolved[i] = type;
-        }
-
-        if (totalBytes > MaxTotalUploadBytes)
-        {
-            ModelState.AddModelError(
-                nameof(UploadPaperRequest.Files),
-                $"The submission exceeds the {MaxTotalUploadBytes / (1024 * 1024)} MB total limit.");
-            valid = false;
-        }
-
-        // A paper of mixed formats is almost certainly a mistake — a PDF is already
-        // the whole document, so pairing it with loose images means the submitter
-        // picked the wrong files.
-        if (valid && resolved.Any(t => t == PaperFileTypes.Pdf) && resolved.Length > 1)
-        {
-            ModelState.AddModelError(
-                nameof(UploadPaperRequest.Files),
-                "A PDF must be submitted on its own. Upload either one PDF or a set of images.");
-            valid = false;
-        }
-
-        return valid ? resolved : null;
+        return StatusCode(StatusCodes.Status201Created, UploadedPaperDto.From(result.Paper!));
     }
 }

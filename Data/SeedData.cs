@@ -128,7 +128,14 @@ public static class SeedData
         // ---- Papers ----
         // Months follow a plausible academic calendar: midterms in Nov/Apr,
         // finals in Jan/Jun, resits in Sep.
-        static Paper Doc(Subject subject, ExamType examType, int month, int year, PaperStatus status, DateTime uploadedAt)
+        static Paper Doc(
+            Subject subject,
+            ExamType examType,
+            int month,
+            int year,
+            PaperStatus status,
+            DateTime uploadedAt,
+            string? rejectionReason = null)
         {
             var slug = subject.Name.ToLowerInvariant().Replace(' ', '-');
             return new Paper
@@ -139,6 +146,12 @@ public static class SeedData
                 Year = year,
                 Status = status,
                 UploadedAt = uploadedAt,
+
+                // Decided a couple of days after upload — plausible for a queue
+                // worked through in batches, and it satisfies CK_Paper_ReviewedAt,
+                // which forbids a review timestamp on a paper still pending.
+                ReviewedAt = status == PaperStatus.Pending ? null : uploadedAt.AddDays(2),
+                RejectionReason = status == PaperStatus.Rejected ? rejectionReason : null,
 
                 // Single-page PDFs, matching what the archive held before uploads
                 // could carry several images. No bytes exist on disk for these —
@@ -169,7 +182,8 @@ public static class SeedData
             // Data Structures and Algorithms
             Doc(dsa, ExamType.Midterm, 11, 2024, PaperStatus.Approved, new DateTime(2024, 12, 1, 8, 30, 0, DateTimeKind.Utc)),
             Doc(dsa, ExamType.Final, 6, 2025, PaperStatus.Approved, new DateTime(2025, 6, 22, 15, 5, 0, DateTimeKind.Utc)),
-            Doc(dsa, ExamType.Final, 6, 2024, PaperStatus.Rejected, new DateTime(2024, 7, 2, 11, 20, 0, DateTimeKind.Utc)),
+            Doc(dsa, ExamType.Final, 6, 2024, PaperStatus.Rejected, new DateTime(2024, 7, 2, 11, 20, 0, DateTimeKind.Utc),
+                "Pages 2 and 3 are too blurred to read. Please re-photograph in better light."),
 
             // Mathematics I — shared by three majors, so this is the busiest subject.
             Doc(math1, ExamType.Midterm, 11, 2025, PaperStatus.Approved, new DateTime(2025, 11, 26, 10, 0, 0, DateTimeKind.Utc)),
@@ -187,7 +201,8 @@ public static class SeedData
 
             // Cryptography
             Doc(crypto, ExamType.Final, 1, 2025, PaperStatus.Approved, new DateTime(2025, 1, 24, 10, 18, 0, DateTimeKind.Utc)),
-            Doc(crypto, ExamType.Resit, 9, 2025, PaperStatus.Rejected, new DateTime(2025, 9, 8, 22, 4, 0, DateTimeKind.Utc)),
+            Doc(crypto, ExamType.Resit, 9, 2025, PaperStatus.Rejected, new DateTime(2025, 9, 8, 22, 4, 0, DateTimeKind.Utc),
+                "This is the September 2024 paper, not 2025. Please check the date and resubmit."),
 
             // Computer Networks
             Doc(networks, ExamType.Final, 6, 2024, PaperStatus.Approved, new DateTime(2024, 6, 27, 8, 51, 0, DateTimeKind.Utc)),

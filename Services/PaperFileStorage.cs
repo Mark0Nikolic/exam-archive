@@ -99,11 +99,15 @@ public sealed class PaperFileStorage
     }
 
     /// <summary>
-    /// Writes one uploaded page to <paramref name="relativePath"/> and returns the
-    /// bytes written.
+    /// Writes one page to <paramref name="relativePath"/> and returns the bytes
+    /// written.
     /// </summary>
+    /// <param name="content">
+    /// The bytes to store — for images this is the sanitized stream rather than
+    /// the uploaded one, so stripped metadata never reaches the disk.
+    /// </param>
     public async Task<long> SaveAsync(
-        IFormFile file,
+        Stream content,
         string relativePath,
         CancellationToken cancellationToken)
     {
@@ -122,7 +126,7 @@ public sealed class PaperFileStorage
         await using var destination = new FileStream(
             absolutePath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
 
-        await file.CopyToAsync(destination, cancellationToken);
+        await content.CopyToAsync(destination, cancellationToken);
 
         return destination.Length;
     }

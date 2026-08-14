@@ -121,6 +121,17 @@ public class ExamArchiveDbContext : DbContext
                     value => value,
                     value => DateTime.SpecifyKind(value, DateTimeKind.Utc));
 
+            // Same UTC treatment as UploadedAt, and for the same reason.
+            entity.Property(p => p.ReviewedAt)
+                .HasConversion(
+                    value => value,
+                    value => value.HasValue
+                        ? DateTime.SpecifyKind(value.Value, DateTimeKind.Utc)
+                        : value);
+
+            entity.Property(p => p.RejectionReason)
+                .HasMaxLength(500);
+
             // Restrict: a subject cannot be deleted while it still has papers.
             entity.HasOne(p => p.Subject)
                 .WithMany(s => s.Papers)
@@ -143,6 +154,21 @@ public class ExamArchiveDbContext : DbContext
                 t.HasCheckConstraint(
                     "CK_Paper_Status",
                     "[Status] IN ('Pending', 'Approved', 'Rejected')");
+
+                // One-directional on purpose. It forbids a reason on a paper that
+                // is not rejected — which would contradict the status — but does
+                // not demand one on papers that are, because rows decided before
+                // this column existed have no reason and inventing one would put
+                // fiction in the database. New rejections are required to carry a
+                // reason by the API instead.
+                t.HasCheckConstraint(
+                    "CK_Paper_RejectionReason",
+                    "[Status] = 'Rejected' OR [RejectionReason] IS NULL");
+
+                // Likewise: a paper still waiting cannot have been reviewed.
+                t.HasCheckConstraint(
+                    "CK_Paper_ReviewedAt",
+                    "[Status] <> 'Pending' OR [ReviewedAt] IS NULL");
             });
         });
 

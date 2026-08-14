@@ -28,11 +28,16 @@ public class ModerationController : ControllerBase
 {
     private readonly ExamArchiveDbContext _db;
     private readonly PaperFileServer _files;
+    private readonly PaperSubmissionService _submissions;
 
-    public ModerationController(ExamArchiveDbContext db, PaperFileServer files)
+    public ModerationController(
+        ExamArchiveDbContext db,
+        PaperFileServer files,
+        PaperSubmissionService submissions)
     {
         _db = db;
         _files = files;
+        _submissions = submissions;
     }
 
     /// <summary>
@@ -72,7 +77,9 @@ public class ModerationController : ControllerBase
                 p.Year,
                 p.Files.Count,
                 p.UploadedAt,
-                p.Status))
+                p.Status,
+                p.ReviewedAt,
+                p.RejectionReason))
             .ToListAsync(cancellationToken);
 
         return Ok(papers);
@@ -130,5 +137,151 @@ public class ModerationController : ControllerBase
             approvedOnly: false,
             asAttachment: download,
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Publishes a paper: it becomes visible to everyone through the browse API.
+    /// </summary>
+    /// <remarks>
+    /// Also reverses a rejection, which clears the stored reason — leaving it
+    /// behind would put a rejection note on a published paper. Approving a paper
+    /// that is already approved changes nothing and still returns 200, so a
+    /// double-clicked button is not an error.
+    /// </remarks>
+    [HttpPost("papers/{id:int}/approve")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ModerationPaperDto>> ApprovePaper(
+        int id,
+        CancellationToken cancellationToken)
+    {
+        var paper = await _db.Papers.FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
+
+        if (paper is null)
+        {
+            return NotFound();
+        }
+
+        if (paper.Status != PaperStatus.Approved)
+        {
+            paper.Status = PaperStatus.Approved;
+            paper.ReviewedAt = DateTime.UtcNow;
+            paper.RejectionReason = null;
+
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+
+        return Ok(await LoadForModerationAsync(id, cancellationToken));
+    }
+
+    /// <summary>
+    /// Turns a paper down, recording why.
+    /// </summary>
+    /// <remarks>
+    /// The files stay on disk. A rejection is a judgement that can be revisited —
+    /// a moderator misreads a page, or the submitter explains what it is — and
+    /// deleting on rejection would make that unrecoverable. Papers are small; the
+    /// safe direction is to keep the bytes and sweep them later if it ever matters.
+    /// <para>
+    /// Rejecting an already-rejected paper updates the reason, which is what a
+    /// moderator correcting their own wording expects.
+    /// </para>
+    /// </remarks>
+    [HttpPost("papers/{id:int}/reject")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ModerationPaperDto>> RejectPaper(
+        int id,
+        [FromBody] RejectPaperRequest request,
+        CancellationToken cancellationToken)
+    {
+        var paper = await _db.Papers.FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
+
+        if (paper is null)
+        {
+            return NotFound();
+        }
+
+        paper.Status = PaperStatus.Rejected;
+        paper.ReviewedAt = DateTime.UtcNow;
+        paper.RejectionReason = request.Reason.Trim();
+
+        await _db.SaveChangesAsync(cancellationToken);
+
+        return Ok(await LoadForModerationAsync(id, cancellationToken));
+    }
+
+    /// <summary>
+    /// Uploads a paper on behalf of staff, published immediately.
+    /// </summary>
+    /// <remarks>
+    /// Identical to the public upload except that the paper skips the queue: a
+    /// professor or assistant adding a paper is the same authority that would have
+    /// approved it, so making them upload it and then approve their own submission
+    /// is a step that decides nothing.
+    /// <para>
+    /// SECURITY: this endpoint publishes to the archive without review, which makes
+    /// it the most valuable thing here to an attacker. It lives on this controller
+    /// precisely so that the eventual [Authorize] covers it — until then it is as
+    /// open as the rest, and this must not be reachable from outside a development
+    /// machine.
+    /// </para>
+    /// </remarks>
+    [HttpPost("papers/upload")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(PaperSubmissionService.MaxTotalUploadBytes)]
+    [ProducesResponseType(StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<UploadedPaperDto>> UploadPaper(
+        [FromForm] UploadPaperRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _submissions.SubmitAsync(
+            request, PaperStatus.Approved, cancellationToken);
+
+        if (!result.Succeeded)
+        {
+            foreach (var error in result.Errors)
+            {
+                ModelState.AddModelError(error.Field, error.Message);
+            }
+
+            return ValidationProblem(ModelState);
+        }
+
+        // Unlike the public upload this one has somewhere to point: the paper is
+        // approved, so it is already reachable through the browse API.
+        return CreatedAtAction(
+            actionName: nameof(PapersController.GetPaperFiles),
+            controllerName: "Papers",
+            routeValues: new { id = result.Paper!.Id },
+            value: UploadedPaperDto.From(result.Paper));
+    }
+
+    /// <summary>
+    /// Re-reads a paper in the shape the queue uses, so a decision returns the
+    /// same row the caller was already displaying.
+    /// </summary>
+    private async Task<ModerationPaperDto?> LoadForModerationAsync(
+        int id,
+        CancellationToken cancellationToken)
+    {
+        return await _db.Papers
+            .AsNoTracking()
+            .Where(p => p.Id == id)
+            .Select(p => new ModerationPaperDto(
+                p.Id,
+                p.SubjectId,
+                p.Subject!.Name,
+                p.ExamType,
+                p.Month,
+                p.Year,
+                p.Files.Count,
+                p.UploadedAt,
+                p.Status,
+                p.ReviewedAt,
+                p.RejectionReason))
+            .FirstOrDefaultAsync(cancellationToken);
     }
 }

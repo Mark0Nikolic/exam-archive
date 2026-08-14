@@ -31,6 +31,8 @@ builder.Services.AddDbContext<ExamArchiveDbContext>(options =>
 // wraps a DbContext and has to follow its scope.
 builder.Services.AddSingleton<PaperFileStorage>();
 builder.Services.AddScoped<PaperFileServer>();
+builder.Services.AddSingleton<ImageSanitizer>();
+builder.Services.AddScoped<PaperSubmissionService>();
 
 // Enums serialize as their name, not their number. Without this, PaperStatus
 // would reach clients as 0/1/2 — unreadable, and it would silently change the

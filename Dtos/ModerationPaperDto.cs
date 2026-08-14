@@ -8,6 +8,8 @@ namespace ExamArchive.Dtos;
 /// not browsing an archive: the subject name saves a lookup per row, and the
 /// status is the field being acted on.
 /// </summary>
+/// <param name="ReviewedAt">When the decision was made, or null while pending.</param>
+/// <param name="RejectionReason">Why it was turned down. Null unless rejected.</param>
 public record ModerationPaperDto(
     int Id,
     int SubjectId,
@@ -17,4 +19,6 @@ public record ModerationPaperDto(
     int Year,
     int PageCount,
     DateTime UploadedAt,
-    PaperStatus Status);
+    PaperStatus Status,
+    DateTime? ReviewedAt,
+    string? RejectionReason);

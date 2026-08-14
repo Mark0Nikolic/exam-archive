@@ -57,4 +57,47 @@ Accept: application/json
 ### Preview a submission in the browser, no download step
 GET {{ExamArchive_HostAddress}}/api/moderation/papers/28/files/1
 
+### Approve a paper — it becomes visible through the browse API
+POST {{ExamArchive_HostAddress}}/api/moderation/papers/28/approve
+
+### Reject a paper. The reason is required and shown to the submitter.
+POST {{ExamArchive_HostAddress}}/api/moderation/papers/29/reject
+Content-Type: application/json
+
+{
+  "reason": "Page 2 is upside down and unreadable. Please re-photograph it."
+}
+
+### Rejected papers, with the reason each was turned down for
+GET {{ExamArchive_HostAddress}}/api/moderation/papers?status=Rejected
+Accept: application/json
+
+### Staff upload — published immediately, skips the queue.
+### SECURITY: unauthenticated today. Must not be reachable outside development.
+POST {{ExamArchive_HostAddress}}/api/moderation/papers/upload
+Content-Type: multipart/form-data; boundary=----Boundary
+
+------Boundary
+Content-Disposition: form-data; name="SubjectId"
+
+5
+------Boundary
+Content-Disposition: form-data; name="ExamType"
+
+Final
+------Boundary
+Content-Disposition: form-data; name="Month"
+
+6
+------Boundary
+Content-Disposition: form-data; name="Year"
+
+2026
+------Boundary
+Content-Disposition: form-data; name="Files"; filename="page1.pdf"
+Content-Type: application/pdf
+
+< ./uploads/2026/databases-final-2026-01-12b6010d.pdf
+------Boundary--
+
 ###
