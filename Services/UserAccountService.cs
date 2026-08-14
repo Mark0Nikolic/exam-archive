@@ -38,6 +38,24 @@ public sealed class UserAccountService
     private static readonly string DecoyHash =
         new PasswordHasher<User>().HashPassword(new User(), "not-a-real-password");
 
+    /// <summary>
+    /// Shortest password this application will set. The one place the rule lives.
+    /// </summary>
+    /// <remarks>
+    /// Length only, with no demand for punctuation or mixed case. Composition rules
+    /// steer people towards a small set of predictable shapes — a capital at the
+    /// front, a digit and a bang at the end — which barely enlarges the search space
+    /// while making the result harder to remember. Length is what actually costs an
+    /// attacker.
+    /// <para>
+    /// Enforced wherever a password is <em>set</em>, and deliberately not at sign-in:
+    /// repeating the rule on the login form would tell an attacker the shape of the
+    /// search space for free, and an existing password shorter than this must still
+    /// be able to get its owner in so they can change it.
+    /// </para>
+    /// </remarks>
+    public const int MinimumPasswordLength = 12;
+
     private readonly ExamArchiveDbContext _db;
     private readonly PasswordHasher<User> _hasher = new();
     private readonly ILogger<UserAccountService> _logger;
@@ -110,6 +128,110 @@ public sealed class UserAccountService
         }
 
         return user;
+    }
+
+    /// <summary>
+    /// Why a password change was refused, or that it succeeded.
+    /// </summary>
+    /// <remarks>
+    /// Distinguished, unlike the single null from <see cref="ValidateCredentialsAsync"/>.
+    /// The caller here is already signed in and the server knows exactly who they
+    /// are, so there is no identity left to leak — and a person changing their own
+    /// password needs to be told which of these went wrong in order to fix it.
+    /// </remarks>
+    public enum PasswordChangeResult
+    {
+        Changed,
+
+        /// <summary>The account vanished between the cookie being issued and now.</summary>
+        UserNotFound,
+
+        /// <summary>The account was deactivated while its session was still live.</summary>
+        AccountInactive,
+
+        /// <summary>The current password was wrong, so this is not the account's owner.</summary>
+        IncorrectPassword,
+
+        /// <summary>The new password is the old one, so nothing would change.</summary>
+        SameAsCurrent,
+
+        /// <summary>The new password is shorter than <see cref="MinimumPasswordLength"/>.</summary>
+        TooShort
+    }
+
+    /// <summary>
+    /// Replaces a signed-in account's own password.
+    /// </summary>
+    /// <remarks>
+    /// The current password is required, and that is the point of the endpoint
+    /// rather than an inconvenience. A session cookie proves that this browser was
+    /// signed in at some point, not that the person at the keyboard owns the
+    /// account — and an unlocked machine in a faculty office is the realistic way
+    /// that gap gets exploited. Knowing the current password is what distinguishes
+    /// the owner from a passer-by.
+    /// <para>
+    /// KNOWN LIMITATION: changing a password does not end sessions on other devices.
+    /// Cookies are self-contained, so one already issued stays valid until it
+    /// expires — including one held by whoever prompted the change. Closing that
+    /// requires a value on the account that is checked per request and rotated here;
+    /// until then, a compromised session survives its own password reset.
+    /// </para>
+    /// </remarks>
+    public async Task<PasswordChangeResult> ChangePasswordAsync(
+        int userId,
+        string currentPassword,
+        string newPassword,
+        CancellationToken cancellationToken)
+    {
+        // Checked here rather than trusted from the request, so the rule holds even
+        // if a caller reaches this without model validation having run.
+        if (newPassword.Length < MinimumPasswordLength)
+        {
+            return PasswordChangeResult.TooShort;
+        }
+
+        var user = await _db.Users
+            .FirstOrDefaultAsync(u => u.Id == userId, cancellationToken);
+
+        if (user is null)
+        {
+            return PasswordChangeResult.UserNotFound;
+        }
+
+        // The first point in the request pipeline where IsActive is re-read for an
+        // already-signed-in caller. Everywhere else still trusts the cookie, which
+        // is why revoking an account currently takes effect at its expiry rather
+        // than immediately.
+        if (!user.IsActive)
+        {
+            return PasswordChangeResult.AccountInactive;
+        }
+
+        if (_hasher.VerifyHashedPassword(user, user.PasswordHash, currentPassword)
+            == PasswordVerificationResult.Failed)
+        {
+            _logger.LogWarning(
+                "Password change refused for {Username}: the current password was wrong.",
+                user.Username);
+
+            return PasswordChangeResult.IncorrectPassword;
+        }
+
+        // Caught so that someone who believes they have changed their password
+        // actually has. This matters most after a temporary password is issued,
+        // where retyping the temporary one would otherwise look like success.
+        if (_hasher.VerifyHashedPassword(user, user.PasswordHash, newPassword)
+            != PasswordVerificationResult.Failed)
+        {
+            return PasswordChangeResult.SameAsCurrent;
+        }
+
+        user.PasswordHash = _hasher.HashPassword(user, newPassword);
+        await _db.SaveChangesAsync(cancellationToken);
+
+        _logger.LogInformation("{Username} changed their password.", user.Username);
+
+        return PasswordChangeResult.Changed;
     }
 
     /// <summary>

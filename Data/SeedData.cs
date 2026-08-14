@@ -57,12 +57,19 @@ public static class SeedData
     /// <para>
     /// The reason it is a constant rather than a configuration value is the same
     /// one: a real password does not belong in appsettings.json either, since that
-    /// file is committed too. When this application gets its first real
-    /// administrator the password will come from user secrets or an environment
-    /// variable, and that account will not be created here.
+    /// file is committed too. A real administrator is created by
+    /// <see cref="Services.AdminBootstrap"/> from an environment variable instead,
+    /// and never by this file.
+    /// </para>
+    /// <para>
+    /// Long enough to satisfy <see cref="Services.UserAccountService.MinimumPasswordLength"/>.
+    /// Nothing enforces that here — seeding writes a hash directly and never passes
+    /// through the change-password endpoint — but a sample account that violates the
+    /// application's own rule is a confusing thing to hand somebody, and it would
+    /// leave the seeded accounts unable to be used as an honest demonstration of it.
     /// </para>
     /// </remarks>
-    private const string DevPassword = "Lozinka!123";
+    private const string DevPassword = "Lozinka!12345";
 
     /// <summary>
     /// The accounts created on a development database — one per role, since there

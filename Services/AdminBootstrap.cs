@@ -21,16 +21,6 @@ namespace ExamArchive.Services;
 /// </remarks>
 public static class AdminBootstrap
 {
-    /// <summary>
-    /// Shortest bootstrap password accepted.
-    /// </summary>
-    /// <remarks>
-    /// Length only — no required punctuation or digits. Composition rules push
-    /// people towards predictable shapes like "Password1!" while barely enlarging
-    /// the search space; length is the property that actually costs an attacker.
-    /// </remarks>
-    private const int MinimumPasswordLength = 12;
-
     private const string UsernameKey = "Bootstrap:AdminUsername";
     private const string PasswordKey = "Bootstrap:AdminPassword";
 
@@ -79,7 +69,10 @@ public static class AdminBootstrap
             return;
         }
 
-        if (password.Length < MinimumPasswordLength)
+        // The same rule the change-password endpoint applies. Shared rather than
+        // repeated, because a policy written down twice is a policy that ends up
+        // meaning two different things.
+        if (password.Length < UserAccountService.MinimumPasswordLength)
         {
             // Refused rather than accepted-with-a-warning. This account has every
             // permission the system has, it is created unattended, and a weak
@@ -88,7 +81,7 @@ public static class AdminBootstrap
                 "The configured bootstrap password is too short: {Length} characters, "
                 + "minimum {Minimum}. No administrator was created.",
                 password.Length,
-                MinimumPasswordLength);
+                UserAccountService.MinimumPasswordLength);
 
             return;
         }

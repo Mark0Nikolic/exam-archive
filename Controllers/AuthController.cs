@@ -110,6 +110,82 @@ public class AuthController : ControllerBase
     }
 
     /// <summary>
+    /// Changes the signed-in account's own password.
+    /// </summary>
+    /// <remarks>
+    /// Self-service, and the only way a password changes without an administrator
+    /// involved. It is what makes an admin-issued temporary password temporary:
+    /// without this, a password the admin chose stays in use forever and the admin
+    /// can sign in as that person indefinitely.
+    /// <para>
+    /// Nobody can change anybody else's password here — the account is taken from
+    /// the session cookie, not from the request body. An admin resetting somebody
+    /// else's is a different operation on a different controller, and keeping them
+    /// apart means this endpoint has no privilege to escalate.
+    /// </para>
+    /// </remarks>
+    [HttpPost("change-password")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> ChangePassword(
+        [FromBody] ChangePasswordRequest request,
+        CancellationToken cancellationToken)
+    {
+        var id = User.GetUserId();
+
+        if (id is null)
+        {
+            return Unauthorized();
+        }
+
+        var result = await _accounts.ChangePasswordAsync(
+            id.Value, request.CurrentPassword, request.NewPassword, cancellationToken);
+
+        switch (result)
+        {
+            case UserAccountService.PasswordChangeResult.Changed:
+                return NoContent();
+
+            // The cookie is valid but the account behind it is gone or switched off.
+            // Signing them out turns a confusing failure into the correct state:
+            // they are not signed in, and the next request says so.
+            case UserAccountService.PasswordChangeResult.UserNotFound:
+            case UserAccountService.PasswordChangeResult.AccountInactive:
+                await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+
+                return Problem(
+                    title: "Account unavailable",
+                    detail: "This account is no longer active. Sign in again.",
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            // Reported against the field so a form can mark the right box. Safe to
+            // be specific: the caller is authenticated and already knows whose
+            // account this is, so there is no existence to leak.
+            case UserAccountService.PasswordChangeResult.IncorrectPassword:
+                ModelState.AddModelError(
+                    nameof(request.CurrentPassword), "That is not your current password.");
+                break;
+
+            case UserAccountService.PasswordChangeResult.SameAsCurrent:
+                ModelState.AddModelError(
+                    nameof(request.NewPassword),
+                    "The new password must be different from the current one.");
+                break;
+
+            case UserAccountService.PasswordChangeResult.TooShort:
+                ModelState.AddModelError(
+                    nameof(request.NewPassword),
+                    $"The new password must be at least {UserAccountService.MinimumPasswordLength} characters.");
+                break;
+        }
+
+        return ValidationProblem(ModelState);
+    }
+
+    /// <summary>
     /// Reports the signed-in account, or 401 if there is none.
     /// </summary>
     /// <remarks>

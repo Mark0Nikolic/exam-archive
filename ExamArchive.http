@@ -15,7 +15,7 @@ Content-Type: application/json
 
 {
   "username": "moderator",
-  "password": "Lozinka!123"
+  "password": "Lozinka!12345"
 }
 
 ### Sign in as an admin — same powers today, plus the configuration work to come
@@ -24,7 +24,7 @@ Content-Type: application/json
 
 {
   "username": "admin",
-  "password": "Lozinka!123"
+  "password": "Lozinka!12345"
 }
 
 ### Wrong password — same message as an unknown username, on purpose
@@ -40,6 +40,27 @@ Content-Type: application/json
 ### only way a frontend can find out.
 GET {{ExamArchive_HostAddress}}/api/auth/me
 Accept: application/json
+
+### Change your own password. Requires the current one — a session cookie proves
+### the browser signed in once, not that the person at the keyboard owns the
+### account. Minimum 12 characters for the new one.
+POST {{ExamArchive_HostAddress}}/api/auth/change-password
+Content-Type: application/json
+
+{
+  "currentPassword": "Lozinka!12345",
+  "newPassword": "NovaLozinka2026"
+}
+
+### Same password back again — refused, so a change that did nothing is not
+### mistaken for one that worked
+POST {{ExamArchive_HostAddress}}/api/auth/change-password
+Content-Type: application/json
+
+{
+  "currentPassword": "NovaLozinka2026",
+  "newPassword": "NovaLozinka2026"
+}
 
 ### Sign out
 POST {{ExamArchive_HostAddress}}/api/auth/logout
