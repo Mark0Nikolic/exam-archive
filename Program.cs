@@ -143,15 +143,27 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
     app.UseSwagger();
     app.UseSwaggerUI();
+}
 
-    // Sample data for local development only. No-op once the database has rows.
-    // This branch is the only thing standing between the seeded accounts and a
-    // real deployment, which is why the accounts are created here and not in a
-    // migration.
-    using var scope = app.Services.CreateScope();
+using (var scope = app.Services.CreateScope())
+{
     var db = scope.ServiceProvider.GetRequiredService<ExamArchiveDbContext>();
     var accounts = scope.ServiceProvider.GetRequiredService<UserAccountService>();
-    await SeedData.SeedAsync(db, accounts, app.Logger);
+
+    if (app.Environment.IsDevelopment())
+    {
+        // Sample data for local development only. No-op once the database has rows.
+        // This branch is the only thing standing between the seeded accounts and a
+        // real deployment, which is why the accounts are created here and not in a
+        // migration.
+        await SeedData.SeedAsync(db, accounts, app.Logger);
+    }
+
+    // Unconditional, unlike the seeding above: this is the production path, and it
+    // is the only way an administrator can exist on a machine that has never had
+    // one. Runs after seeding so that a development database, which already has a
+    // seeded admin, falls straight through without a warning.
+    await AdminBootstrap.EnsureAdminAsync(db, accounts, app.Configuration, app.Logger);
 }
 
 app.UseHttpsRedirection();
